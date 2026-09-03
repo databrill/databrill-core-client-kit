@@ -1,0 +1,33 @@
+{
+	"imports": {
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.6",
+		"@std/cli": "jsr:@std/cli@^1.0.28"
+	},
+	"tasks": {
+		"fmt": "deno fmt",
+		"fmt:check": "deno fmt --check",
+		"lint": "deno lint",
+		"check": "deno check --quiet",
+		"static": "deno --quiet fmt && deno --quiet task check && deno --quiet task lint",
+		"static:ci": "deno --quiet task fmt:check && deno --quiet task check && deno --quiet task lint",
+		"ci": "deno task static:ci"
+	},
+	"fmt": {
+		"useTabs": true,
+		"lineWidth": 120,
+		"indentWidth": 4,
+		"semiColons": true,
+		"singleQuote": false,
+		"proseWrap": "preserve",
+		"exclude": [
+			"**/*.md"
+		]
+	},
+	"lint": {
+		"rules": {
+			"tags": [
+				"recommended"
+			]
+		}
+	}
+}
