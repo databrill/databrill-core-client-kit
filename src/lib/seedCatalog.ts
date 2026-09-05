@@ -2,12 +2,12 @@
  * Seeding a workspace's brand configuration: the ontology layer, the product
  * families, and the per-ASIN configuration, from one parsed seed object.
  *
- * This is the LIBRARY half of the `seedFamilies` command. It takes a seed that
- * has already been parsed from somewhere — a `brands/<slug>/families.json` in
+ * This is the LIBRARY half of the `seedCatalog` command. It takes a seed that
+ * has already been parsed from somewhere — a `brands/<slug>/catalog.json` in
  * the consumer's repo, a spreadsheet export, a fixture built in a test — and
  * never reads a file, never looks at `Deno.args` and never prints usage. The
- * command that does those things is `./cli/seedFamilies.ts`, and the
- * `brands/<slug>/families.json` layout is a convention of that command alone.
+ * command that does those things is `./cli/seedCatalog.ts`, and the
+ * `brands/<slug>/catalog.json` layout is a convention of that command alone.
  *
  * ## Order of writes, and why it is not an implementation detail
  *
@@ -23,7 +23,7 @@
  * brand_config_amazon_attributes     (none — see below)
  * ```
  *
- * {@link seedFamilies} writes them in exactly that order, in one transaction.
+ * {@link seedCatalog} writes them in exactly that order, in one transaction.
  * **Variants before ASINs: `brand_config_amazon_asin.msku` references them.**
  * Attributes are written last and have no ordering requirement at all: that
  * table has no foreign keys, because its scope columns are polymorphic —
@@ -42,7 +42,7 @@
  *
  * ## What is validated before anything is written
  *
- * {@link parseFamiliesSeed} is a pure function and does the whole check up
+ * {@link parseCatalog} is a pure function and does the whole check up
  * front, reporting every problem it found rather than the first. Two of its
  * rules exist because of a specific failure:
  *
@@ -84,7 +84,7 @@
  * ## A seed is the whole configuration, not a fragment
  *
  * Every category, variant and family a row references must be declared in the
- * SAME seed — {@link parseFamiliesSeed} refuses one that is not, rather than
+ * SAME seed — {@link parseCatalog} refuses one that is not, rather than
  * letting it become a constraint violation raised mid-transaction. Rows already
  * in the database do not count, so a seed that adds one ASIN to an existing
  * variant has to declare that variant too. That is the cost of validating the
@@ -221,15 +221,15 @@ export interface AmazonAsinSeed {
  * A whole brand configuration, validated and ready to write.
  *
  * The five lists are in foreign-key order, which is also the order
- * {@link seedFamilies} writes them in.
+ * {@link seedCatalog} writes them in.
  */
-export interface FamiliesSeed {
+export interface Catalog {
 	/**
 	 * The workspace the seed says it is for, or `null` when it does not say.
 	 *
-	 * {@link seedFamilies} does not read it — it writes wherever the handle it
+	 * {@link seedCatalog} does not read it — it writes wherever the handle it
 	 * was given points. It is here so a CALLER can check the two agree, which
-	 * `../cli/seedFamilies.ts` does: a seed that names a workspace and a command
+	 * `../cli/seedCatalog.ts` does: a seed that names a workspace and a command
 	 * that resolves a different one is the one mistake in this file with no
 	 * symptom, because writing a brand's whole configuration into the wrong
 	 * workspace succeeds.
@@ -250,12 +250,12 @@ export interface FamiliesSeed {
 }
 
 /**
- * Every key {@link parseFamiliesSeed} understands at the top level of a seed.
+ * Every key {@link parseCatalog} understands at the top level of a seed.
  *
  * An unknown one is refused rather than ignored, because ignoring one is
  * indistinguishable from a completely successful run: a misspelt `categorys`
  * writes no categories and reports every other count as expected, and there is
- * nothing for a reader to notice. See `README.md` § "families.json contract".
+ * nothing for a reader to notice. See `README.md` § "catalog.json contract".
  */
 const SEED_KEYS = ["wsid", "properties", "categories", "variants", "families", "asins", "attributes"] as const;
 
@@ -281,8 +281,8 @@ export class SeedValidationError extends Error {
 	}
 }
 
-/** How many rows {@link seedFamilies} wrote into each table. */
-export interface SeedFamiliesResult {
+/** How many rows {@link seedCatalog} wrote into each table. */
+export interface SeedCatalogResult {
 	readonly properties: number;
 	readonly categories: number;
 	readonly variants: number;
@@ -291,8 +291,8 @@ export interface SeedFamiliesResult {
 	readonly attributes: number;
 }
 
-/** Options for {@link parseFamiliesSeed}. */
-export interface ParseFamiliesSeedOptions {
+/** Options for {@link parseCatalog}. */
+export interface ParseCatalogOptions {
 	/**
 	 * What to call the seed in error messages — a file path from a CLI, or
 	 * whatever a caller building a seed in memory wants a reader to recognise.
@@ -496,7 +496,7 @@ function reportDuplicates(key: string, values: readonly string[], problems: stri
 }
 
 /**
- * Check an already-parsed seed and return it in the shape {@link seedFamilies}
+ * Check an already-parsed seed and return it in the shape {@link seedCatalog}
  * writes, or throw a {@link SeedValidationError} listing everything wrong.
  *
  * Pure: no file is read, no connection is opened, and the same input always
@@ -504,7 +504,7 @@ function reportDuplicates(key: string, values: readonly string[], problems: stri
  * ASIN's `msku` naming a declared variant, and an ASIN that may be an ISBN) be
  * tested without a database.
  */
-export function parseFamiliesSeed(value: unknown, options: ParseFamiliesSeedOptions = {}): FamiliesSeed {
+export function parseCatalog(value: unknown, options: ParseCatalogOptions = {}): Catalog {
 	const source = options.source ?? "the seed";
 	const problems: string[] = [];
 
@@ -798,7 +798,7 @@ function resolveVariantData(
  *
  * ```ts
  * const handles = tenantDb({ postgresUrl, schema: "w123456789" });
- * const written = await seedFamilies(handles.write, parseFamiliesSeed(JSON.parse(text)));
+ * const written = await seedCatalog(handles.write, parseCatalog(JSON.parse(text)));
  * ```
  *
  * Takes the `write` surface rather than the whole handle: writing brand
@@ -811,7 +811,7 @@ function resolveVariantData(
  * seed knows nothing about, and `ON DELETE RESTRICT` would fail the whole
  * transaction rather than tell you which.
  */
-export function seedFamilies(write: TenantDb["write"], seed: FamiliesSeed): Promise<SeedFamiliesResult> {
+export function seedCatalog(write: TenantDb["write"], seed: Catalog): Promise<SeedCatalogResult> {
 	const now = Temporal.Now.instant().toString();
 	const categoryData = new Map<string, Readonly<Record<string, Json>>>(
 		seed.categories.map((row: OntologyCategorySeed): [string, Readonly<Record<string, Json>>] => [
@@ -820,7 +820,7 @@ export function seedFamilies(write: TenantDb["write"], seed: FamiliesSeed): Prom
 		]),
 	);
 
-	return write.transaction().execute(async (trx): Promise<SeedFamiliesResult> => {
+	return write.transaction().execute(async (trx): Promise<SeedCatalogResult> => {
 		if (seed.properties.length > 0) {
 			await trx.insertInto("brand_config_ontology_metadata")
 				.values(seed.properties.map((row: OntologyPropertySeed) => ({

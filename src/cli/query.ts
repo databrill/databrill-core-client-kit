@@ -12,10 +12,7 @@
  *
  * ## Flags
  *
- * - `--wsid <wsid>` — which workspace to run against. Optional when the
- *   configuration declares exactly one. **There is no built-in default**; see
- *   `./workspaceTarget.ts` for what replaced the client repos' `DEFAULT_WSID`
- *   and why.
+ * - `--wsid <wsid>` — required; which workspace to run against.
  * - `--file <path>` — read the statement from a file instead of the argument.
  * - `--format table|json` — `table` (default) for a terminal, `json` for a pipe.
  * There is no `--qualify`. It was removed on 2026-09-03 along with the rewriter
@@ -32,14 +29,14 @@ import { isAbsolute, resolve } from "node:path";
 import process from "node:process";
 import { formatResult, QUERY_FORMATS, type QueryFormat, runStatement } from "../lib/query.ts";
 import { destroyAllTenantDbs } from "../lib/tenantDb.ts";
-import { openWorkspace } from "./workspaceTarget.ts";
+import { openWorkspace, resolveWsid } from "./workspaceTarget.ts";
 
 function usage(): string {
 	return [
-		'Usage: query.ts [--wsid <wsid>] [--format table|json] [--root <dir>] "<statement>"',
-		"       query.ts [--wsid <wsid>] --file <path>",
+		'Usage: query.ts --wsid <wsid> [--format table|json] [--root <dir>] "<statement>"',
+		"       query.ts --wsid <wsid> --file <path>",
 		"",
-		"  --wsid <wsid>   the workspace to query; optional when exactly one is configured",
+		"  --wsid <wsid>   the workspace to query (required)",
 		"  --file <path>   read the statement from a file instead of the argument",
 		"  --format <fmt>  table (default) or json",
 		"  --root <dir>    where databrill.config.json is looked for (default: cwd)",
@@ -75,7 +72,7 @@ function refuseUnknownOption(usageText: string): (arg: string) => boolean {
  *
  * Exported for `tests/unit/cli.test.ts`: a relative `--file` resolving against
  * `--root` rather than against this file's own location is the same property
- * `--brand` has in `./seedFamilies.ts`, and it is the one a submodule breaks.
+ * `--brand` has in `./seedCatalog.ts`, and it is the one a submodule breaks.
  */
 export function statementPath(file: string | undefined, rootDir: string): string | null {
 	if (file === undefined || file === "") {
@@ -113,6 +110,7 @@ export async function main(args: readonly string[]): Promise<number> {
 		console.log(usage());
 		return 0;
 	}
+	const wsid = resolveWsid(flags.wsid);
 
 	const rootDir = resolve(flags.root ?? process.cwd());
 	const positional = flags._.map((value: string | number): string => String(value)).join(" ").trim();
@@ -123,7 +121,7 @@ export async function main(args: readonly string[]): Promise<number> {
 	}
 
 	const format = readFormat(flags.format);
-	const { handles } = openWorkspace(flags.wsid, { rootDir });
+	const { handles } = openWorkspace(wsid, { rootDir });
 	try {
 		// `runStatement` and not `runQuery`: this command does not know whether it
 		// was handed a SELECT, and an UPDATE with no RETURNING has no rows to show

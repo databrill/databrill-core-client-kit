@@ -58,6 +58,7 @@
 export {
 	assertExplicitSslMode,
 	destroyAllTenantDbs,
+	destroyTenantDb,
 	globalTenantDbStore,
 	moduleTenantDbStore,
 	newTenantDbStore,
@@ -68,29 +69,29 @@ export type { TenantDbOptions, TenantDbStore, TenantHandles, TenantSource } from
 export { createRawReader, tbl } from "./lib/rawSql.ts";
 export type { RawReader } from "./lib/rawSql.ts";
 
-// The library halves of the two commands. `./cli/seedFamilies.ts` and
+// The library halves of the two commands. `./cli/seedCatalog.ts` and
 // `./cli/query.ts` are the commands; these are what they call, and what a
 // consumer calls when it has a seed or a statement of its own and wants nothing
-// to do with `brands/<slug>/families.json` or with argument parsing. Neither
+// to do with `brands/<slug>/catalog.json` or with argument parsing. Neither
 // adds a bare specifier to the list above.
 export {
 	ASIN_PATTERN,
 	ONTOLOGY_APPLIES_TO,
-	parseFamiliesSeed,
-	seedFamilies,
+	parseCatalog,
+	seedCatalog,
 	SeedValidationError,
-} from "./lib/seedFamilies.ts";
+} from "./lib/seedCatalog.ts";
 export type {
 	AmazonAsinSeed,
 	AmazonFamilySeed,
-	FamiliesSeed,
+	Catalog,
 	OntologyAppliesTo,
 	OntologyCategorySeed,
 	OntologyPropertySeed,
 	OntologyVariantSeed,
-	ParseFamiliesSeedOptions,
-	SeedFamiliesResult,
-} from "./lib/seedFamilies.ts";
+	ParseCatalogOptions,
+	SeedCatalogResult,
+} from "./lib/seedCatalog.ts";
 
 export { formatResult, formatRows, QUERY_FORMATS, runQuery, runStatement } from "./lib/query.ts";
 export type { QueryFormat } from "./lib/query.ts";

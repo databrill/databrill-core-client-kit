@@ -18,9 +18,9 @@
  * **A tenant login role carries its own `search_path`.**
  * `services/libs/database/src/tenantRolesSql.ts` issues
  * `ALTER ROLE w{wsid}_{ro,rw,mcp_ro,mcp_rw} SET search_path = "w{wsid}"` when it
- * provisions the role, and `services/libs/database/src/assertSearchPath.ts`
- * states why: a role-level setting is applied by the server at session start, so
- * it survives a transaction-mode pooler where a client-issued `SET` does not.
+ * provisions the role, and `tenantRolesSql.ts` states why: a role-level setting is
+ * applied by the server at session start, so it survives a transaction-mode pooler
+ * where a client-issued `SET` does not.
  * `services/apps/mcp` runs entirely on that mechanism and passes no `searchPath`
  * of its own. So a caller connected as its workspace's own role is ALREADY in
  * the right schema, and an unqualified `FROM amazon_listing_open` resolves to

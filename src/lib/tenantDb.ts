@@ -21,9 +21,8 @@
  * `services/libs/database/src/tenantRolesSql.ts` issues
  * `ALTER ROLE w{wsid}_{ro,rw,mcp_ro,mcp_rw} SET search_path = "w{wsid}"` for
  * every tenant login role. A role-level setting is applied by the SERVER at
- * session start, so every backend a pooler opens as that role has it, and
- * `services/libs/database/src/assertSearchPath.ts` says exactly this: "Binding
- * the schema to the role instead is what makes transaction-mode pooling safe."
+ * session start, so every backend a pooler opens as that role has it. Binding the
+ * schema to the role is what makes transaction-mode pooling safe.
  * `services/apps/mcp` runs entirely on it and passes no `searchPath`.
  *
  * So a caller connected with its own workspace's credentials is in the right
@@ -33,10 +32,11 @@
  * `tbl(schema, name)` in `./rawSql.ts` is there for a statement that must name a
  * schema OTHER than the connection's own.
  *
- * If a query does land in `public`, the role is missing its `ALTER ROLE`. That
- * is a provisioning defect with its own check (`assertSearchPath`), and it is
- * not something this package should paper over — `src/query.ts` records what
- * happened the one time it tried.
+ * If a query does land in `public`, the role is missing its `ALTER ROLE`. That is
+ * a provisioning defect, and it surfaces on its own: the role holds no grant on
+ * `public`, so the statement fails rather than reading the wrong rows. It is not
+ * something this package should paper over — `src/query.ts` records what happened
+ * the one time it tried.
  *
  * ## `sslmode` must be explicit for a remote host — and why that is a THROW
  *
@@ -72,7 +72,7 @@
  * CA to verify against is not a thing it can do; and supplying `ssl` makes the
  * caller's object win outright, which is `verify-full`. Any existing client URL
  * using `verify-ca` therefore starts failing at connect time rather than
- * quietly verifying against the system trust store. That is the right direction
+ * silently verifying against the system trust store. That is the right direction
  * — a loud failure beats a silent change of what "verified" means — and it is
  * documented here because the repos that will hit it are the ones being
  * converted to this package.
@@ -247,6 +247,25 @@ export function tenantDb(source: TenantSource, options: TenantDbOptions = {}): T
 	const handles: TenantHandles = { ...handle, raw: createRawReader(handle.pool) };
 	store.set(key, handles);
 	return handles;
+}
+
+/**
+ * Destroy and forget the handle for one source, if it is open.
+ *
+ * Registry-opened callers use this when the role-binding assertion fails: a
+ * rejected credential must not leave a dead or unverified handle cached for a
+ * later request.
+ */
+export async function destroyTenantDb(
+	source: TenantSource,
+	store: TenantDbStore = moduleStore,
+): Promise<void> {
+	const key = sourceKey(source);
+	const handles = store.get(key);
+	store.delete(key);
+	if (handles !== undefined) {
+		await handles.destroy();
+	}
 }
 
 /**

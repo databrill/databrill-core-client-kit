@@ -11,40 +11,23 @@
  * one here would put a specific customer's workspace id inside a package every
  * customer runs.
  *
- * What replaces it is a resolution with nothing to be wrong about:
- * {@link resolveWsid} takes `--wsid` when it is given, and otherwise reads the
- * SOLE workspace the consumer's own `databrill.config.json` declares. With one
- * configured workspace — which is what a client repo is today — the flag is
- * optional and the command is as short as it was before. With none or with
- * several, there is no answer to guess and it throws, naming the configured
- * wsids so the fix is in the message. A statement run against the wrong
- * workspace is the failure worth designing against here, and the only case
- * where a default cannot cause it is the case where there is exactly one.
+ * Every invocation names its workspace with `--wsid`. The registry is a
+ * server-side map from that explicit id to a credential; the number of entries
+ * in it never changes the request contract.
  */
 
-import { getWorkspace, listWsids, type WorkspaceConfigOptions } from "../lib/workspaces.ts";
+import { getWorkspace, type WorkspaceConfigOptions } from "../lib/workspaces.ts";
 import { tenantDb, type TenantHandles } from "../lib/tenantDb.ts";
 
 /**
- * The wsid to act on: the explicit one, or the sole configured one.
- *
- * Throws naming the configured wsids when `explicit` is absent and the
- * configuration declares anything other than exactly one workspace.
+ * The explicit wsid to act on. Missing and blank values are always refused.
  */
-export function resolveWsid(explicit: string | undefined, opts: WorkspaceConfigOptions = {}): string {
-	if (explicit !== undefined && explicit !== "") {
-		return explicit;
+export function resolveWsid(explicit: string | undefined): string {
+	const wsid = explicit?.trim() ?? "";
+	if (wsid !== "") {
+		return wsid;
 	}
-	const configured = listWsids(opts);
-	const only = configured[0];
-	if (configured.length === 1 && only !== undefined) {
-		return only;
-	}
-	throw new Error(
-		`No --wsid given, and the loaded databrill.config.json declares ${configured.length} workspaces, ` +
-			`so there is no sole one to mean: ${configured.length === 0 ? "(none)" : configured.join(", ")}. ` +
-			`Pass --wsid.`,
-	);
+	throw new Error("Pass --wsid <wsid>; every workspace operation must name its target explicitly.");
 }
 
 /** What a command needs to act on one workspace. */
@@ -62,8 +45,11 @@ export interface WorkspaceTarget {
  * halves, rather than in the module whose whole dependency footprint is
  * `node:` builtins.
  */
-export function openWorkspace(explicit: string | undefined, opts: WorkspaceConfigOptions = {}): WorkspaceTarget {
-	const wsid = resolveWsid(explicit, opts);
+export function openWorkspace(
+	explicit: string | undefined,
+	opts: WorkspaceConfigOptions = {},
+): WorkspaceTarget {
+	const wsid = resolveWsid(explicit);
 	const { database } = getWorkspace(wsid, opts);
 	const handles = tenantDb({ postgresUrl: database.postgresUrl, schema: database.schema });
 	return { wsid, schema: database.schema, handles };

@@ -1,8 +1,7 @@
 /**
- * Multi-workspace config. Optional: when `DATABRILL_CONFIG` points at a JSON
- * file, the stdio frontend routes each tool call to one of several client
- * workspaces (each its own Postgres schema/DB). With no config, the server
- * falls back to a single `POSTGRES_URL` (the original single-client behaviour).
+ * Workspace registry. When `DATABRILL_CONFIG` points at a JSON file, the stdio
+ * frontend routes each tool call's required `wsid` to one workspace-specific
+ * credential. There is no unscoped single-credential mode.
  *
  * The file is a map of `wsid → workspace`. Each workspace carries its database
  * connection and a `merchantId → { name, countries }` map. Connection strings
@@ -43,7 +42,7 @@
 
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve as resolvePath } from "node:path";
-import { countryCodeToMarketplaceInfo, regionCountryCodes } from "./amazonConstants.ts";
+import { countryCodeToMarketplaceInfo } from "./amazonConstants.ts";
 
 export interface WorkspaceDatabase {
 	readonly postgresUrl: string;
@@ -51,20 +50,17 @@ export interface WorkspaceDatabase {
 }
 
 export const TFL_INVENTORY_FEATURE = "tflInventory";
-const TFL_INVENTORY_ENV = "DATABRILL_TFL_INVENTORY_ENABLED";
 
 /**
- * The SQL tools carry TWO flags, not one. `sql` gates the read tools
- * (`executeSql`, `listTables`, `describeTable`); `sqlWrite` gates `writeSql`
+ * The SQL tools carry TWO flags, not one. `sql` enables the read tools
+ * (`executeSql`, `listTables`, `describeTable`); `sqlWrite` enables `writeSql`
  * alone. A hosted server announces the read tools in every session but the
  * write tool only in a read-write one, which a single flag cannot express —
  * and expressing it outside the feature mechanism would mean filtering tools
  * by name, which is exactly what the declared access kind exists to avoid.
  */
 export const SQL_FEATURE = "sql";
-const SQL_ENV = "DATABRILL_SQL_ENABLED";
 export const SQL_WRITE_FEATURE = "sqlWrite";
-const SQL_WRITE_ENV = "DATABRILL_SQL_WRITE_ENABLED";
 
 export type WorkspaceFeatures = Readonly<Record<string, boolean>>;
 
@@ -117,9 +113,6 @@ export interface WorkspaceDirectory {
 	readonly byMerchant: ReadonlyMap<string, string>;
 }
 
-/** Just the lookup maps: what `stores` inference reads, with no workspace map involved. */
-type WorkspaceLookups = Pick<WorkspaceDirectory, "byCountry" | "byMerchant">;
-
 /** UK is an alias for GB throughout Amazon's data; collapse it for matching. */
 function canonCountry(code: string): string {
 	const up = code.trim().toUpperCase();
@@ -162,27 +155,15 @@ function parseFeatures(raw: unknown, fail: (message: string) => never): Workspac
 	return features;
 }
 
-function envFlag(name: string): boolean {
-	return process.env[name]?.trim().toLowerCase() === "true";
-}
-
-/** Feature flags for single-POSTGRES_URL mode, where no workspace config exists. */
-export function loadSingleWorkspaceFeatures(): WorkspaceFeatures {
-	return {
-		[TFL_INVENTORY_FEATURE]: envFlag(TFL_INVENTORY_ENV),
-		[SQL_FEATURE]: envFlag(SQL_ENV),
-		[SQL_WRITE_FEATURE]: envFlag(SQL_WRITE_ENV),
-	};
-}
-
 export function workspaceHasFeature(workspace: DirectoryWorkspace, feature: string): boolean {
 	return workspace.features?.[feature] === true;
 }
 
 /**
  * Load the workspace config from `DATABRILL_CONFIG`, or return `null` when the
- * variable is unset (single-workspace `POSTGRES_URL` mode). Throws on a malformed
- * file so a bad config fails loudly at startup rather than mid-request.
+ * variable is unset. Frontends that require routing must reject that null.
+ * Throws on a malformed file so a bad config fails at startup rather than
+ * mid-request.
  */
 export function loadConfig(): Config | null {
 	const path = process.env["DATABRILL_CONFIG"];
@@ -286,82 +267,31 @@ function build(parsed: unknown, source: string): Config {
 	return { workspaces, byCountry, byMerchant };
 }
 
-/** Split a `stores` argument (string "US,DE" or array) into raw tokens. */
-function tokenize(stores: unknown): string[] {
-	if (typeof stores === "string") return stores.split(",");
-	if (Array.isArray(stores)) return stores.map((s) => String(s));
-	return [];
-}
-
-/** Which workspaces could a `stores` argument refer to? (country / merchant / region tokens) */
-function candidateWsids(config: WorkspaceLookups, stores: unknown): Set<string> {
-	const wsids = new Set<string>();
-	for (const raw of tokenize(stores)) {
-		const t = raw.trim();
-		if (!t || t === "*") continue;
-
-		// {merchantId}-{site} or a bare merchantId
-		const dash = t.lastIndexOf("-");
-		const merchant = dash > 0 ? t.slice(0, dash) : t;
-		if (config.byMerchant.has(merchant)) {
-			wsids.add(config.byMerchant.get(merchant)!);
-			continue;
-		}
-
-		// country code
-		const country = canonCountry(t);
-		const forCountry = config.byCountry.get(country);
-		if (forCountry) {
-			for (const w of forCountry) wsids.add(w);
-			continue;
-		}
-
-		// region (na / eu / fe) — expand to its countries
-		const region = t.toUpperCase();
-		if (region in regionCountryCodes) {
-			for (const cc of regionCountryCodes[region as keyof typeof regionCountryCodes]) {
-				for (const w of config.byCountry.get(canonCountry(cc)) ?? []) wsids.add(w);
-			}
-		}
-	}
-	return wsids;
-}
-
 /**
- * Resolve which workspace a tool call targets. Order: explicit `wsid` → the only
- * configured workspace → inference from the `stores` argument. Throws (listing the
- * options) when the call is ambiguous or names an unknown workspace, so the agent
- * can retry with an explicit `wsid`.
+ * Resolve the explicit `wsid` a tool call targets. Missing, blank and unknown
+ * values are refused; neither registry size nor `stores` selects a workspace.
  *
- * Generic over the workspace type so this ONE inference rule serves both a file-loaded
+ * Generic over the workspace type so this one explicit-resolution rule serves both a file-loaded
  * `Config` (returning a `Workspace`, whose `database` the stdio frontend then reads) and a
  * credential-free `WorkspaceDirectory` (returning only the `wsid` its caller needs). A second
  * implementation of the order above would let the same `stores` argument pick different
  * workspaces in different frontends.
  */
 export function resolveWorkspace<W extends DirectoryWorkspace>(
-	config: WorkspaceLookups & { readonly workspaces: Readonly<Record<string, W>> },
+	config: { readonly workspaces: Readonly<Record<string, W>> },
 	args: Record<string, unknown>,
 ): W {
 	const ids = Object.keys(config.workspaces);
 
 	const wsidArg = typeof args["wsid"] === "string" ? args["wsid"].trim() : "";
-	if (wsidArg) {
-		const ws = config.workspaces[wsidArg];
-		if (!ws) throw new Error(`Unknown wsid "${wsidArg}". Configured workspaces: ${ids.join(", ")}`);
-		return ws;
+	if (wsidArg === "") {
+		throw new Error(`Pass "wsid" explicitly (one of: ${ids.join(", ")}).`);
 	}
-
-	if (ids.length === 1) return config.workspaces[ids[0]!]!;
-
-	const cands = [...candidateWsids(config, args["stores"])];
-	if (cands.length === 1) return config.workspaces[cands[0]!]!;
-	if (cands.length > 1) {
-		throw new Error(
-			`Ambiguous workspace: the stores match ${cands.join(", ")}. Pass "wsid" to choose one.`,
-		);
+	const workspace = config.workspaces[wsidArg];
+	if (workspace === undefined) {
+		throw new Error(`Unknown wsid "${wsidArg}". Configured workspaces: ${ids.join(", ")}`);
 	}
-	throw new Error(`Cannot infer the workspace from the arguments. Pass "wsid" (one of: ${ids.join(", ")}).`);
+	return workspace;
 }
 
 /** A JSON-friendly summary of the configured workspaces, for the listWorkspaces tool. */

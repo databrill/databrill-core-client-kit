@@ -2,7 +2,7 @@
 
 The database-access layer and the two commands that every Databrill client repo would otherwise paste into its
 own `src/db/` and `scripts/`: a tenant connection factory, a raw-SQL reader, an optional workspace registry over
-`databrill.config.json`, and the `seedFamilies` and `query` commands.
+`databrill.config.json`, and the `seedCatalog` and `query` commands.
 
 One implementation, consumed by every client repo, instead of a copy per repo that drifts apart on correctness.
 
@@ -36,7 +36,7 @@ this package's own `deno.json`.** So every bare specifier under `src/` is a line
 {
 	"imports": {
 		// Needed by everything in this package.
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.6"
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.7"
 	}
 }
 ```
@@ -61,38 +61,36 @@ Put these in your `deno.json` `tasks` instead of a script in your repo:
 ```jsonc
 {
 	"tasks": {
-		"seedFamilies": "deno run -A extern/databrill-core-client-kit/src/cli/seedFamilies.ts",
+		"seedCatalog": "deno run -A extern/databrill-core-client-kit/src/cli/seedCatalog.ts",
 		"query": "deno run -A extern/databrill-core-client-kit/src/cli/query.ts"
 	}
 }
 ```
 
 ```bash
-deno run -A extern/databrill-core-client-kit/src/cli/seedFamilies.ts --brand acme
+deno run -A extern/databrill-core-client-kit/src/cli/seedCatalog.ts --brand acme --wsid 123456789
 deno run -A extern/databrill-core-client-kit/src/cli/query.ts --wsid 123456789 "SELECT count(*) FROM amazon_listing_open"
 ```
 
 Add `--env-file=.env` to either line if your connection string comes from a `.env`.
 
 Both commands refuse an option they do not define rather than ignoring it. `--formta json` would otherwise run
-with the default format and `--wsdi 123456789` with the fallback workspace, both silently and both reporting
-success.
+with the default format, and a mistyped `--wsid` must never silently select another workspace.
 
 ### `query`
 
 | flag | what it does |
 | --- | --- |
-| `--wsid <wsid>` | Which workspace to run against. Optional when your config declares exactly one. |
+| `--wsid <wsid>` | Which workspace to run against. Required. |
 | `--file <path>` | Read the statement from a file instead of the argument. |
 | `--format table\|json` | `table` (default) for a terminal, `json` for a pipe. |
 | `--root <dir>` | Where `databrill.config.json` is looked for. Defaults to the current directory. |
 
-**There is no default wsid.** The client repos this came from imported a `DEFAULT_WSID` constant from their own
-`src/shared/workspace.ts`; that is one repo's identity, not a property of the convention, and it stayed behind.
-What replaced it: `--wsid` when you give it, and otherwise **the sole workspace your `databrill.config.json`
-declares**. With two or more configured there is no answer to guess, so it fails and names them. The failure
-worth designing against here is a statement run against the wrong workspace, and the only case where a fallback
-cannot cause that is the case where exactly one workspace exists.
+**There is no default wsid.** Every invocation must pass `--wsid`, even when the registry declares one
+workspace. The registry maps that explicit id to a server-side credential; discovery never selects a target.
+The registry entry is taken at its word: the command opens the pool and runs the statement. Pointing a wsid
+at the wrong connection string is a configuration mistake, and it shows up as recognisably wrong data rather
+than as an error.
 
 **Table names need no schema prefix, and there is no `--qualify`.** Your workspace's login role is
 provisioned with `ALTER ROLE w{wsid}_ro SET search_path = "w{wsid}"`, which the server applies at session
@@ -107,20 +105,20 @@ Writes are printed as the driver's command tag rather than as rows, because an `
 has no rows to print however many it changed: `UPDATE 5000`, `DELETE 3`. Only a `SELECT` that matched nothing
 says `(0 rows)`. `--format json` is unaffected — it is for a pipe, and always gives the rows array.
 
-### `seedFamilies`
+### `seedCatalog`
 
 | flag | what it does |
 | --- | --- |
-| `--brand <slug>` | Read `<root>/brands/<slug>/families.json`. |
+| `--brand <slug>` | Read `<root>/brands/<slug>/catalog.json`. |
 | `--file <path>` | Read this seed file instead of the `--brand` convention. |
-| `--wsid <wsid>` | Which workspace to write. Same resolution as `query`. |
+| `--wsid <wsid>` | Which workspace to write. Required. |
 | `--root <dir>` | Where `brands/` and `databrill.config.json` are looked for. Defaults to the current directory. |
 | `--check` | Validate the seed and write nothing. `--dry-run` is the same flag, under the name the client-repo script used. |
 
-`brands/<slug>/families.json` is a convention of **the command**, not of the library — see "Calling the library
+`brands/<slug>/catalog.json` is a convention of **the command**, not of the library — see "Calling the library
 directly" below.
 
-## The `families.json` contract
+## The `catalog.json` contract
 
 One JSON object with an optional `wsid` and six optional lists, one per table. The lists are given here in the
 order they are written, which is foreign-key order: **variants before ASINs, because
@@ -203,10 +201,10 @@ Field by field:
 
 Everything not listed as required may be absent or `null`.
 
-- **`wsid`**, when given, is the workspace the seed says it is for. It is **not** the write target — the target
-  is `--wsid` or the sole configured workspace, the same resolution `query` uses. The two are checked against
-  each other and a disagreement writes nothing. Say it when the seed belongs to one workspace and you want that
-  recorded in the file; leave it out and the command says nothing about it.
+- **`wsid`**, when given, is the workspace the seed says it is for. It is **not** the write target — required
+  `--wsid` is. The two are checked against each other and a disagreement writes nothing. Say it when the seed
+  belongs to one workspace and you want that recorded in the file; leave it out and the command says nothing
+  about it.
 
 Three behaviours worth knowing before you run it:
 
@@ -277,15 +275,15 @@ nothing. Import those when you build a seed or a statement some other way:
 import {
 	destroyAllTenantDbs,
 	formatRows,
-	parseFamiliesSeed,
+	parseCatalog,
 	runQuery,
-	seedFamilies,
+	seedCatalog,
 	tenantDb,
 } from "./extern/databrill-core-client-kit/src/mod.ts";
 
 const { db, write, raw } = tenantDb({ postgresUrl, schema: "w123456789" });
 
-await seedFamilies(write, parseFamiliesSeed(mySeedObject));
+await seedCatalog(write, parseCatalog(mySeedObject));
 console.log(formatRows([...await runQuery(raw, "SELECT 1 AS one")], "table"));
 
 await destroyAllTenantDbs();

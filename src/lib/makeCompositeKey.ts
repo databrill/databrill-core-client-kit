@@ -11,7 +11,7 @@
  * the file as binary and skip it SILENTLY, so code searches return incomplete
  * results with no warning.
  *
- * The separator is a TAB, and that choice is load-bearing: a key must be something
+ * The separator is a TAB because a key must be something
  * you can reliably copy and paste while troubleshooting or writing a test. Exotic
  * control characters (unit separator and friends) do not survive a round trip
  * through a terminal, a diff, or a paste buffer, so they are not an option here

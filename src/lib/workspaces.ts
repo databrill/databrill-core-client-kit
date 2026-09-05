@@ -42,9 +42,9 @@
  * ## What stayed behind in the client repos
  *
  * `DEFAULT_SCHEMA` and `DEFAULT_WSID`. Those are one repo's identities, not a
- * property of the convention, so this package has no default wsid at all: a
- * caller says which workspace it means, or reads the sole configured one from
- * {@link listWsids}.
+ * property of the convention, so this package has no default wsid at all: every
+ * caller says which workspace it means explicitly. {@link listWsids} is for
+ * discovery and diagnostics, never for selecting a target.
  */
 
 import { statSync } from "node:fs";

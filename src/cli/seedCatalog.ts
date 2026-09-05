@@ -1,26 +1,24 @@
 #!/usr/bin/env -S deno run -A
 /**
- * `seedFamilies` — write a brand configuration from a JSON file into one
+ * `seedCatalog` — write a brand configuration from a JSON file into one
  * workspace.
  *
  * ```
- * deno run -A extern/databrill-core-client-kit/src/cli/seedFamilies.ts --brand acme
+ * deno run -A extern/databrill-core-client-kit/src/cli/seedCatalog.ts --brand acme --wsid 123456789
  * ```
  *
  * This file is the COMMAND: argument parsing, reading
- * `brands/<slug>/families.json`, and printing what happened. All of the
- * validation and every write is in `../lib/seedFamilies.ts`, which takes an
+ * `brands/<slug>/catalog.json`, and printing what happened. All of the
+ * validation and every write is in `../lib/seedCatalog.ts`, which takes an
  * already-parsed seed and touches no filesystem — so a repo that builds its
  * configuration some other way calls that directly and the
- * `brands/<slug>/families.json` layout stays a convention of this command.
+ * `brands/<slug>/catalog.json` layout stays a convention of this command.
  *
  * ## Flags
  *
- * - `--brand <slug>` — read `<root>/brands/<slug>/families.json`.
+ * - `--brand <slug>` — read `<root>/brands/<slug>/catalog.json`.
  * - `--file <path>` — read this file instead. One of `--brand` or `--file`.
- * - `--wsid <wsid>` — which workspace to write. Optional when the
- *   configuration declares exactly one; see `./workspaceTarget.ts` for why
- *   there is no default beyond that.
+ * - `--wsid <wsid>` — required; which workspace to write.
  * - `--root <dir>` — where `brands/` and `databrill.config.json` are looked
  *   for. Defaults to the current directory, which is the consumer's repo when
  *   the command is run from it.
@@ -41,17 +39,17 @@
 import { parseArgs } from "@std/cli/parse-args";
 import { isAbsolute, join, resolve } from "node:path";
 import process from "node:process";
-import { parseFamiliesSeed, seedFamilies, SeedValidationError } from "../lib/seedFamilies.ts";
+import { parseCatalog, seedCatalog, SeedValidationError } from "../lib/seedCatalog.ts";
 import { destroyAllTenantDbs } from "../lib/tenantDb.ts";
 import { openWorkspace, resolveWsid } from "./workspaceTarget.ts";
 
 function usage(): string {
 	return [
-		"Usage: seedFamilies.ts (--brand <slug> | --file <path>) [--wsid <wsid>] [--root <dir>] [--check]",
+		"Usage: seedCatalog.ts (--brand <slug> | --file <path>) --wsid <wsid> [--root <dir>] [--check]",
 		"",
-		"  --brand <slug>  read <root>/brands/<slug>/families.json",
+		"  --brand <slug>  read <root>/brands/<slug>/catalog.json",
 		"  --file <path>   read this seed file instead of the --brand convention",
-		"  --wsid <wsid>   the workspace to write; optional when exactly one is configured",
+		"  --wsid <wsid>   the workspace to write (required)",
 		"  --root <dir>    where brands/ and databrill.config.json are looked for (default: cwd)",
 		"  --check         validate the seed and write nothing (--dry-run is the same flag)",
 		"  --help          this text",
@@ -62,7 +60,7 @@ function usage(): string {
  * Refuse to write when the seed names one workspace and this invocation
  * resolved another.
  *
- * A `families.json` may carry a top-level `wsid`, and the client-repo script
+ * A `catalog.json` may carry a top-level `wsid`, and the client-repo script
  * this command replaces used that value AS the write target — it never had a
  * `--wsid` flag at all. This command resolves the target from `--wsid` or the
  * sole configured workspace instead, which is what makes the package
@@ -110,7 +108,7 @@ function refuseUnknownOption(usageText: string): (arg: string) => boolean {
  * convention.
  *
  * Exported for `tests/unit/cli.test.ts`. It is the whole of the `--root`
- * property: `brands/<slug>/families.json` is resolved against the directory the
+ * property: `brands/<slug>/catalog.json` is resolved against the directory the
  * command was pointed at, never against this file's own location — which is the
  * difference between a submodule that works and one that reports nothing.
  */
@@ -121,7 +119,7 @@ export function seedPath(brand: string | undefined, file: string | undefined, ro
 	if (brand === undefined || brand === "") {
 		throw new Error(`Pass --brand <slug> or --file <path>.\n\n${usage()}`);
 	}
-	return join(rootDir, "brands", brand, "families.json");
+	return join(rootDir, "brands", brand, "catalog.json");
 }
 
 /**
@@ -147,6 +145,7 @@ export async function main(args: readonly string[]): Promise<number> {
 		console.log(usage());
 		return 0;
 	}
+	const wsid = resolveWsid(flags.wsid);
 
 	const rootDir = resolve(flags.root ?? process.cwd());
 	const path = seedPath(flags.brand, flags.file, rootDir);
@@ -157,12 +156,11 @@ export async function main(args: readonly string[]): Promise<number> {
 	} catch (cause) {
 		throw new Error(`${path} is not valid JSON: ${cause instanceof Error ? cause.message : String(cause)}`);
 	}
-	const seed = parseFamiliesSeed(raw, { source: path });
+	const seed = parseCatalog(raw, { source: path });
 
 	if (flags.check) {
 		// Resolved even in --check, because "which workspace would this have
 		// written?" is half of what a reader wants confirmed before a real run.
-		const wsid = resolveWsid(flags.wsid, { rootDir });
 		assertSeedWsid(seed.wsid, wsid, path);
 		console.log(
 			`${path} is valid: ${seed.properties.length} properties, ${seed.categories.length} categories, ` +
@@ -173,10 +171,10 @@ export async function main(args: readonly string[]): Promise<number> {
 		return 0;
 	}
 
-	assertSeedWsid(seed.wsid, resolveWsid(flags.wsid, { rootDir }), path);
-	const { wsid, schema, handles } = openWorkspace(flags.wsid, { rootDir });
+	assertSeedWsid(seed.wsid, wsid, path);
+	const { schema, handles } = openWorkspace(wsid, { rootDir });
 	try {
-		const written = await seedFamilies(handles.write, seed);
+		const written = await seedCatalog(handles.write, seed);
 		console.log(
 			`Seeded workspace ${wsid} (schema ${schema}) from ${path}: ${written.properties} properties, ` +
 				`${written.categories} categories, ${written.variants} variants, ${written.families} families, ` +

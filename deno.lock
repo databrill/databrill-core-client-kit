@@ -4,7 +4,7 @@
     "jsr:@std/cli@^1.0.28": "1.0.32",
     "jsr:@std/fmt@^1.0.10": "1.0.10",
     "jsr:@std/internal@^1.0.14": "1.0.14",
-    "npm:@jsr/databrill__core-pg-kysely@~0.1.6": "0.1.6"
+    "npm:@jsr/databrill__core-pg-kysely@~0.1.7": "0.1.8"
   },
   "jsr": {
     "@std/cli@1.0.32": {
@@ -22,13 +22,13 @@
     }
   },
   "npm": {
-    "@jsr/databrill__core-pg-kysely@0.1.6": {
-      "integrity": "sha512-vufZ+BJrYZaf/Je9+DDYBlhv18qPKs/wi0pnJ5velJPwfIRe9OBATsWRHCMTe8viY/rleWrPH6doY5JZcOIVkw==",
+    "@jsr/databrill__core-pg-kysely@0.1.8": {
+      "integrity": "sha512-7iNO50HfRr3/rY3DNDJ3/toaC9s7OhqCLdAEOFJilXGhSApdTLN667wtue0Z2PotA38ho1p8X61SikvTk6kbiA==",
       "dependencies": [
         "kysely",
         "pg"
       ],
-      "tarball": "https://npm.jsr.io/~/11/@jsr/databrill__core-pg-kysely/0.1.6.tgz"
+      "tarball": "https://npm.jsr.io/~/11/@jsr/databrill__core-pg-kysely/0.1.8.tgz"
     },
     "kysely@0.29.5": {
       "integrity": "sha512-ooa+eSbBNPTo3MycPEuW5jdrxQdQwdtB3LC3h43FiXQbIry5tR0C5lDG7eealK0E4D7XjrnOP5DIUg/LyjRMYQ=="
@@ -105,7 +105,7 @@
   "workspace": {
     "dependencies": [
       "jsr:@std/cli@^1.0.28",
-      "npm:@jsr/databrill__core-pg-kysely@~0.1.6"
+      "npm:@jsr/databrill__core-pg-kysely@~0.1.7"
     ]
   }
 }

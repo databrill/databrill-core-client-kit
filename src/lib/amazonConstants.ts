@@ -354,7 +354,7 @@ const amazonCountryCodeSet: ReadonlySet<string> = new Set(AMAZON_COUNTRY_CODES);
  * Narrow a country code of unknown provenance — a CLI argument, a database row, or the
  * `countryCode` off a marketplace lookup, all of which are plain `string`. Use it at the
  * boundary so an unrecognized code is a case you handle rather than a comparison that
- * quietly comes out false.
+ * silently comes out false.
  */
 export function isAmazonCountryCode(value: string): value is AmazonCountryCode {
 	return amazonCountryCodeSet.has(value);

@@ -1,6 +1,12 @@
 {
+	"minimumDependencyAge": {
+		"age": "P1D",
+		"exclude": [
+			"npm:@jsr/databrill__core-pg-kysely"
+		]
+	},
 	"imports": {
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.6",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.7",
 		"@std/cli": "jsr:@std/cli@^1.0.28"
 	},
 	"tasks": {
