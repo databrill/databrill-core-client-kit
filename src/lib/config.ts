@@ -20,10 +20,8 @@
  *   }
  *
  * This file is canonical HERE and symlinked into `mcp-local/src/config.ts` and
- * `client-kit/src/lib/config.ts`. It was authored in `mcp-local/` and moved when
- * `client-kit/` needed the same parser, because the invariant worth having is
- * that a wsid resolves to the same database in both — one file, not two that
- * agree today. Edit this one; there is no copy step. The symlinks are pinned by
+ * `client-kit/src/lib/config.ts`. Both packages use this parser so a wsid
+ * resolves to the same database in either package. Edit this one; there is no copy step. The symlinks are pinned by
  * `services/tests/unit/mcpSharedSourceSymlinks.test.ts` and
  * `client-kit/tests/unit/packageSymlinks.test.ts`.
  *
@@ -274,8 +272,8 @@ function build(parsed: unknown, source: string): Config {
  * Generic over the workspace type so this one explicit-resolution rule serves both a file-loaded
  * `Config` (returning a `Workspace`, whose `database` the stdio frontend then reads) and a
  * credential-free `WorkspaceDirectory` (returning only the `wsid` its caller needs). A second
- * implementation of the order above would let the same `stores` argument pick different
- * workspaces in different frontends.
+ * implementation of this rule would let one frontend refuse a `wsid` argument the other accepts,
+ * or resolve one the other reports as unknown.
  */
 export function resolveWorkspace<W extends DirectoryWorkspace>(
 	config: { readonly workspaces: Readonly<Record<string, W>> },

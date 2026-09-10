@@ -30,10 +30,8 @@
  * `scopeId` holds a sku, an asin or a family name depending on `scope`, and one
  * column cannot reference three tables.
  *
- * The ontology layer is the part earlier client-repo copies of this script left
- * out, and leaving it out does not fail — it succeeds and produces a workspace
- * whose `brand_config_*` tables are full and whose `brand_ontology_*` views are
- * empty. `brand_ontology_variant` reads straight off
+ * The ontology tables must be seeded for the `brand_ontology_*` views to
+ * return data. `brand_ontology_variant` reads straight off
  * `brand_config_ontology_variant`, and `brand_ontology_amazon_asin` filters to
  * ASINs that resolve to a variant or a family, so with no variants and no
  * categories the two views a reader actually queries return nothing at all

@@ -33,22 +33,16 @@
  * That is the whole list, and it is one line because this package uses ONE
  * Postgres driver. `@databrill/core-pg-kysely` opens the pool; `./lib/rawSql.ts`
  * runs the statements the typed surface cannot express, on that same pool,
- * through `$1` placeholders. There was a second driver here — a `postgres.js`
- * handle in `./tenantSql.ts`, extracted verbatim from the client repos — and it
- * is gone: nothing called it, everything it was reached for is already served by
- * `./lib/rawSql.ts`, and a published package that makes every consumer resolve two
- * Postgres drivers to use one of them is not a package to ship. Removing the
- * `postgres` entry from this package's `deno.json` is what enforces it: the
- * boundary scan in `../tests/unit/boundaryScan.test.ts` derives the allowed bare
- * specifiers from that import map, so a new import of a second driver under
- * `src/` fails the unit suite rather than silently lengthening this list.
+ * through `$1` placeholders. The boundary scan in
+ * `../tests/unit/boundaryScan.test.ts` derives allowed dependencies from the
+ * import map and prevents an undeclared driver from entering `src/`.
  *
- * `@std/cli` is declared in this package's `deno.json` but is NOT on that list:
+ * `cmd-ts` is declared in this package's `deno.json` but is NOT on that list:
  * nothing reachable from this file imports it. It is used only by the two
  * commands under `./cli/`, and a command is run as
  * `deno run -A extern/…/src/cli/query.ts`, where the entry point is inside this
  * package — so Deno discovers THIS package's `deno.json` and resolves against
- * it. A consumer pays for `@std/cli` only if it imports a file under `./cli/`
+ * it. A consumer pays for `cmd-ts` only if it imports a file under `./cli/`
  * from its own code, which is what the library halves re-exported below exist to
  * make unnecessary.
  *
@@ -102,10 +96,7 @@ import type { TenantDb } from "@databrill/core-pg-kysely";
  * The read-only Kysely surface of a tenant database: every published table and
  * view, with mutations and DDL as compile-time errors.
  *
- * These two aliases were a separate `types.ts` in the client repos. They are
- * here instead because two type aliases are not a module, and because the names
- * a caller writes down in its own signatures should come from the same import as
- * the function that returns them.
+ * Import database types from the same entry point as the functions returning them.
  */
 export type ReadDb = TenantDb["db"];
 

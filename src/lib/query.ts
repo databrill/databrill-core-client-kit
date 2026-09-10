@@ -7,37 +7,11 @@
  * `Deno.args` and never prints. `./cli/query.ts` is the command that does those
  * things.
  *
- * ## The statement is sent exactly as written — there is no rewriting here
- *
- * There WAS. `qualify(statement, schema)` rewrote each unqualified table name
- * after `FROM`, `JOIN`, `INTO` and `UPDATE` into `"schema"."name"`, behind a
- * `--qualify` flag, on the premise that a tenant connection has no
- * `search_path`. It was deleted on 2026-09-03, and the premise is what was
- * wrong, not the implementation.
- *
- * **A tenant login role carries its own `search_path`.**
- * `services/libs/database/src/tenantRolesSql.ts` issues
- * `ALTER ROLE w{wsid}_{ro,rw,mcp_ro,mcp_rw} SET search_path = "w{wsid}"` when it
- * provisions the role, and `tenantRolesSql.ts` states why: a role-level setting is
- * applied by the server at session start, so it survives a transaction-mode pooler
- * where a client-issued `SET` does not.
- * `services/apps/mcp` runs entirely on that mechanism and passes no `searchPath`
- * of its own. So a caller connected as its workspace's own role is ALREADY in
- * the right schema, and an unqualified `FROM amazon_listing_open` resolves to
- * the right table with nothing rewritten.
- *
- * What was deleted with it is worth naming, because the temptation to rebuild it
- * is real: masking string literals, dollar-quoted bodies, quoted identifiers and
- * both comment forms so a rewrite could not corrupt a value; collecting `WITH`
- * names in all three spellings so a recursive CTE's self-reference survived;
- * special cases for `ON CONFLICT … DO UPDATE`, `FOR UPDATE`, `FROM ONLY`,
- * `LATERAL`, and a name followed by `(`. Roughly 240 lines of regular
- * expression standing in for a parser, every branch of it added after that
- * branch produced SQL that did not parse — or worse, SQL that parsed and
- * returned the wrong rows. **Do not bring it back.** If a connection is landing
- * in the wrong schema, the role is missing its `ALTER ROLE ... SET search_path`;
- * fix the provisioning, or qualify by hand with `tbl(schema, name)` from
- * `./rawSql.ts`.
+ * Tenant login roles carry `ALTER ROLE ... SET search_path = "w{wsid}"`,
+ * so unqualified table names resolve in the workspace schema, including through
+ * a transaction-mode pooler. Statements are sent unchanged. If a name resolves
+ * in the wrong schema, correct the role's provisioning. Use `tbl(schema, name)`
+ * from `./rawSql.ts` when a statement needs an explicit schema.
  */
 
 import type { TenantPoolResult } from "@databrill/core-pg-kysely";

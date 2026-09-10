@@ -6,8 +6,7 @@
  * distinct tuples flatten to the same string and two report rows merge into one — a
  * wrong number on a page, with no error.
  *
- * The old answer was to join on NUL. That is now PROHIBITED (see
- * `docs/coding_standards.md`): a literal NUL byte makes git and `grep -r` classify
+ * NUL is prohibited as a separator (see `docs/coding_standards.md`): a literal NUL byte makes git and `grep -r` classify
  * the file as binary and skip it SILENTLY, so code searches return incomplete
  * results with no warning.
  *

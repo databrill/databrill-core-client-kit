@@ -22,7 +22,7 @@
  * - `--root <dir>` — where `brands/` and `databrill.config.json` are looked
  *   for. Defaults to the current directory, which is the consumer's repo when
  *   the command is run from it.
- * - `--check` (or `--dry-run`, the name the client-repo script used) — parse and
+ * - `--check` (or `--dry-run`) — parse and
  *   validate, write nothing, exit non-zero on a problem.
  * - `--help`.
  *
@@ -36,40 +36,22 @@
  * and report that none is configured for a repo whose config is in its root.
  */
 
-import { parseArgs } from "@std/cli/parse-args";
+import { command, flag, option, optional, string } from "cmd-ts";
 import { isAbsolute, join, resolve } from "node:path";
 import process from "node:process";
 import { parseCatalog, seedCatalog, SeedValidationError } from "../lib/seedCatalog.ts";
 import { destroyAllTenantDbs } from "../lib/tenantDb.ts";
 import { openWorkspace, resolveWsid } from "./workspaceTarget.ts";
-
-function usage(): string {
-	return [
-		"Usage: seedCatalog.ts (--brand <slug> | --file <path>) --wsid <wsid> [--root <dir>] [--check]",
-		"",
-		"  --brand <slug>  read <root>/brands/<slug>/catalog.json",
-		"  --file <path>   read this seed file instead of the --brand convention",
-		"  --wsid <wsid>   the workspace to write (required)",
-		"  --root <dir>    where brands/ and databrill.config.json are looked for (default: cwd)",
-		"  --check         validate the seed and write nothing (--dry-run is the same flag)",
-		"  --help          this text",
-	].join("\n");
-}
+import { runCommand } from "./command.ts";
 
 /**
  * Refuse to write when the seed names one workspace and this invocation
  * resolved another.
  *
- * A `catalog.json` may carry a top-level `wsid`, and the client-repo script
- * this command replaces used that value AS the write target — it never had a
- * `--wsid` flag at all. This command resolves the target from `--wsid` or the
- * sole configured workspace instead, which is what makes the package
- * repo-agnostic; the cost is that the seed's own statement stops being what
- * decides. So it is checked rather than dropped: writing a brand's whole
- * configuration into the wrong workspace succeeds, upserts over ~200 rows of
- * somebody else's data, and reports every count as expected.
- *
- * A seed with no `wsid` is fine and says nothing, which is the in-memory case.
+ * The required `--wsid` selects the write target. If `catalog.json` also names
+ * a workspace, the two ids must agree before any connection is opened. This
+ * prevents a valid seed from overwriting another workspace's configuration.
+ * A seed may omit `wsid`; the command still requires an explicit target.
  */
 function assertSeedWsid(seedWsid: string | null, resolved: string, path: string): void {
 	if (seedWsid !== null && seedWsid !== resolved) {
@@ -79,28 +61,6 @@ function assertSeedWsid(seedWsid: string | null, resolved: string, path: string)
 				`the seed. Nothing was written.`,
 		);
 	}
-}
-
-/**
- * Refuse an option this command does not define, instead of ignoring it.
- *
- * `parseArgs` keeps an unrecognised flag in its result and no caller reads it,
- * so `--formta json` runs with the default format and `--wsdi 123456789` runs
- * against whichever workspace the fallback picked — both silently, both
- * reporting success. A wrong workspace is the failure this directory is built
- * to design against, so a mistyped option is a refusal here rather than a
- * result nobody can tell apart from the right one.
- *
- * Only `-`-prefixed arguments are checked: everything else is a positional,
- * which `query` uses for the statement itself.
- */
-function refuseUnknownOption(usageText: string): (arg: string) => boolean {
-	return (arg: string): boolean => {
-		if (arg.startsWith("-")) {
-			throw new Error(`Unknown option ${arg}.\n\n${usageText}`);
-		}
-		return true;
-	};
 }
 
 /**
@@ -117,9 +77,87 @@ export function seedPath(brand: string | undefined, file: string | undefined, ro
 		return isAbsolute(file) ? file : resolve(rootDir, file);
 	}
 	if (brand === undefined || brand === "") {
-		throw new Error(`Pass --brand <slug> or --file <path>.\n\n${usage()}`);
+		throw new Error(
+			`Pass --brand <slug> or --file <path>.\n\n${
+				seedCatalogCommand().printHelp({ nodes: [], visitedNodes: new Set() })
+			}`,
+		);
 	}
 	return join(rootDir, "brands", brand, "catalog.json");
+}
+
+function seedCatalogCommand() {
+	return command({
+		name: "seedCatalog.ts",
+		description: "Write a brand configuration into a workspace. Pass --brand or --file.",
+		examples: [
+			{
+				description: "Validate a seed without writing.",
+				command: "seedCatalog.ts --wsid <wsid> --file catalog.json --check",
+			},
+		],
+		args: {
+			brand: option({
+				long: "brand",
+				type: optional(string),
+				description: "Read <root>/brands/<slug>/catalog.json.",
+			}),
+			file: option({
+				long: "file",
+				type: optional(string),
+				description: "Read this seed file; otherwise use --brand.",
+			}),
+			wsid: option({ long: "wsid", type: string, description: "The workspace to write (required)." }),
+			root: option({
+				long: "root",
+				type: optional(string),
+				description: "Where brands/ and databrill.config.json are looked for (default: cwd).",
+			}),
+			check: flag({ long: "check", description: "Validate the seed and write nothing." }),
+			dryRun: flag({ long: "dry-run", description: "Same as --check: validate and write nothing." }),
+		},
+		async handler(flags): Promise<number> {
+			const wsid = resolveWsid(flags.wsid);
+
+			const rootDir = resolve(flags.root ?? process.cwd());
+			const path = seedPath(flags.brand, flags.file, rootDir);
+			const text = await Deno.readTextFile(path);
+			let raw: unknown;
+			try {
+				raw = JSON.parse(text);
+			} catch (cause) {
+				throw new Error(`${path} is not valid JSON: ${cause instanceof Error ? cause.message : String(cause)}`);
+			}
+			const seed = parseCatalog(raw, { source: path });
+
+			if (flags.check || flags.dryRun) {
+				// Resolved even in --check, because "which workspace would this have
+				// written?" is half of what a reader wants confirmed before a real run.
+				assertSeedWsid(seed.wsid, wsid, path);
+				console.log(
+					`${path} is valid: ${seed.properties.length} properties, ${seed.categories.length} categories, ` +
+						`${seed.variants.length} variants, ${seed.families.length} families, ${seed.asins.length} ASINs, ` +
+						`${seed.attributes.length} attributes. ` +
+						`Nothing written (--check); a real run would write workspace ${wsid}.`,
+				);
+				return 0;
+			}
+
+			assertSeedWsid(seed.wsid, wsid, path);
+			const { schema, handles } = openWorkspace(wsid, { rootDir });
+			try {
+				const written = await seedCatalog(handles.write, seed);
+				console.log(
+					`Seeded workspace ${wsid} (schema ${schema}) from ${path}: ${written.properties} properties, ` +
+						`${written.categories} categories, ${written.variants} variants, ${written.families} families, ` +
+						`${written.asins} ASINs, ${written.attributes} attributes.`,
+				);
+			} finally {
+				await destroyAllTenantDbs();
+			}
+			return 0;
+		},
+	});
 }
 
 /**
@@ -131,59 +169,7 @@ export function seedPath(brand: string | undefined, file: string | undefined, ro
  * `net` permission.
  */
 export async function main(args: readonly string[]): Promise<number> {
-	const flags = parseArgs([...args], {
-		string: ["brand", "file", "wsid", "root"],
-		boolean: ["check", "help"],
-		// `--dry-run` is what the client-repo script called this, and it is in
-		// that repo's task docs and in a habit or two. Renaming it would fail
-		// loudly — an unknown option is a refusal here — but failing loudly at
-		// somebody who typed the documented flag is not an improvement.
-		alias: { "dry-run": "check" },
-		unknown: refuseUnknownOption(usage()),
-	});
-	if (flags.help) {
-		console.log(usage());
-		return 0;
-	}
-	const wsid = resolveWsid(flags.wsid);
-
-	const rootDir = resolve(flags.root ?? process.cwd());
-	const path = seedPath(flags.brand, flags.file, rootDir);
-	const text = await Deno.readTextFile(path);
-	let raw: unknown;
-	try {
-		raw = JSON.parse(text);
-	} catch (cause) {
-		throw new Error(`${path} is not valid JSON: ${cause instanceof Error ? cause.message : String(cause)}`);
-	}
-	const seed = parseCatalog(raw, { source: path });
-
-	if (flags.check) {
-		// Resolved even in --check, because "which workspace would this have
-		// written?" is half of what a reader wants confirmed before a real run.
-		assertSeedWsid(seed.wsid, wsid, path);
-		console.log(
-			`${path} is valid: ${seed.properties.length} properties, ${seed.categories.length} categories, ` +
-				`${seed.variants.length} variants, ${seed.families.length} families, ${seed.asins.length} ASINs, ` +
-				`${seed.attributes.length} attributes. ` +
-				`Nothing written (--check); a real run would write workspace ${wsid}.`,
-		);
-		return 0;
-	}
-
-	assertSeedWsid(seed.wsid, wsid, path);
-	const { schema, handles } = openWorkspace(wsid, { rootDir });
-	try {
-		const written = await seedCatalog(handles.write, seed);
-		console.log(
-			`Seeded workspace ${wsid} (schema ${schema}) from ${path}: ${written.properties} properties, ` +
-				`${written.categories} categories, ${written.variants} variants, ${written.families} families, ` +
-				`${written.asins} ASINs, ${written.attributes} attributes.`,
-		);
-	} finally {
-		await destroyAllTenantDbs();
-	}
-	return 0;
+	return await runCommand(seedCatalogCommand(), args);
 }
 
 if (import.meta.main) {

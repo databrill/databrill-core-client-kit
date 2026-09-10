@@ -35,47 +35,19 @@
  * If a query does land in `public`, the role is missing its `ALTER ROLE`. That is
  * a provisioning defect, and it surfaces on its own: the role holds no grant on
  * `public`, so the statement fails rather than reading the wrong rows. It is not
- * something this package should paper over — `src/query.ts` records what happened
- * the one time it tried.
+ * a query transformation problem; correct the role's provisioning.
  *
- * ## `sslmode` must be explicit for a remote host — and why that is a THROW
+ * ## TLS requirements
  *
- * The client repos this code comes from carried their own `connectionString.ts`,
- * which turned a connection string into `pg` TLS options before handing it to
- * `createDb()`. `@databrill/core-pg-kysely` now reads `sslmode` itself, with
- * libpq's meanings, so that module was deleted rather than moved — but the two
- * are not quite the same function. The old one had a default arm the new one
- * deliberately does not have: **no `sslmode` in the string plus a non-local host
- * meant `{ rejectUnauthorized: false }`**, on the stated grounds that an
- * unencrypted connection to a database across the internet is not a reasonable
- * default. `createDb()` leaves such a string exactly as written, sets no `ssl`
- * key at all, and lets `pg` decide — which is plaintext.
+ * {@link tenantDb} requires an explicit `sslmode` for remote hosts and refuses
+ * the connection before opening a pool when it is absent. Local hosts and Unix
+ * sockets are exempt. Use `sslmode=require` for encryption or `sslmode=disable`
+ * for plaintext. The connection string is the only place to select the mode.
  *
- * Silently downgrading a connection from TLS to plaintext is the worst available
- * outcome, and it is invisible to every test this package can run: its own
- * integration suite talks to localhost Postgres in a container, where plaintext
- * is correct. So {@link tenantDb} refuses the ambiguous case instead of guessing
- * either way — see {@link assertExplicitSslMode}. A local host is exempt,
- * because that is exactly the case the old default arm also left alone.
- *
- * The escape hatch is the connection string itself: `sslmode=require` (what a
- * Supabase pooler URL carries) to encrypt, `sslmode=disable` to say plaintext
- * out loud. There is deliberately no option to switch this check off — an option
- * would be a second place to say the same thing, and the URL is where a reader
- * looks.
- *
- * ## `sslmode=verify-ca` changed meaning, and now fails loudly
- *
- * The deleted `connectionString.ts` mapped `verify-ca` to
- * `{ rejectUnauthorized: true }`. `createDb()` **throws** on `verify-ca` unless
- * the caller also supplies `ssl: { ca }`, because verifying against a CA with no
- * CA to verify against is not a thing it can do; and supplying `ssl` makes the
- * caller's object win outright, which is `verify-full`. Any existing client URL
- * using `verify-ca` therefore starts failing at connect time rather than
- * silently verifying against the system trust store. That is the right direction
- * — a loud failure beats a silent change of what "verified" means — and it is
- * documented here because the repos that will hit it are the ones being
- * converted to this package.
+ * `createDb()` interprets the TLS options. `sslmode=verify-ca` requires an
+ * explicit `ssl: { ca }` option, which this package's connection interface does
+ * not accept; callers needing that option must use `createDb()` directly.
+ * `sslmode=verify-full` verifies the certificate using the system trust store.
  */
 
 import { createDb, type TenantDb } from "@databrill/core-pg-kysely";
@@ -165,9 +137,8 @@ export function globalTenantDbStore(name = "databrill.client-kit.tenantDb"): Ten
 }
 
 /**
- * Hostnames that mean "this machine", where the deleted `connectionString.ts`
- * also applied no TLS. A unix-socket connection string has no host at all and
- * lands here as the empty string.
+ * Local hosts are exempt from the explicit TLS-mode requirement.
+ * A Unix-socket connection string has no host and uses the empty string.
  */
 const LOCAL_HOSTS: ReadonlySet<string> = new Set(["", "localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"]);
 
@@ -240,9 +211,7 @@ export function tenantDb(source: TenantSource, options: TenantDbOptions = {}): T
 
 	assertExplicitSslMode(source.postgresUrl);
 
-	// No `...connectionOptions(postgresUrl)` spread here, deliberately: reading
-	// `sslmode` off the string is `createDb()`'s job now, and the module that
-	// used to do it was deleted rather than moved into this package.
+	// `createDb()` interprets the connection string's TLS options.
 	const handle = createDb({ connectionString: source.postgresUrl, schema: source.schema });
 	const handles: TenantHandles = { ...handle, raw: createRawReader(handle.pool) };
 	store.set(key, handles);

@@ -15,56 +15,18 @@
  * - `--wsid <wsid>` — required; which workspace to run against.
  * - `--file <path>` — read the statement from a file instead of the argument.
  * - `--format table|json` — `table` (default) for a terminal, `json` for a pipe.
- * There is no `--qualify`. It was removed on 2026-09-03 along with the rewriter
- * behind it: a tenant login role carries `ALTER ROLE ... SET search_path`, so an
- * unqualified name already resolves in the workspace's own schema. See
- * `../lib/query.ts` for the whole account.
  * - `--root <dir>` — where `databrill.config.json` is looked for. Defaults to
  *   the current directory.
  * - `--help`.
  */
 
-import { parseArgs } from "@std/cli/parse-args";
+import { command, oneOf, option, optional, restPositionals, string } from "cmd-ts";
 import { isAbsolute, resolve } from "node:path";
 import process from "node:process";
 import { formatResult, QUERY_FORMATS, type QueryFormat, runStatement } from "../lib/query.ts";
 import { destroyAllTenantDbs } from "../lib/tenantDb.ts";
 import { openWorkspace, resolveWsid } from "./workspaceTarget.ts";
-
-function usage(): string {
-	return [
-		'Usage: query.ts --wsid <wsid> [--format table|json] [--root <dir>] "<statement>"',
-		"       query.ts --wsid <wsid> --file <path>",
-		"",
-		"  --wsid <wsid>   the workspace to query (required)",
-		"  --file <path>   read the statement from a file instead of the argument",
-		"  --format <fmt>  table (default) or json",
-		"  --root <dir>    where databrill.config.json is looked for (default: cwd)",
-		"  --help          this text",
-	].join("\n");
-}
-
-/**
- * Refuse an option this command does not define, instead of ignoring it.
- *
- * `parseArgs` keeps an unrecognised flag in its result and no caller reads it,
- * so `--formta json` runs with the default format and `--wsdi 123456789` runs
- * against whichever workspace the fallback picked — both silently, both
- * reporting success. A wrong workspace is the failure this directory is built
- * to design against, so a mistyped option is a refusal here rather than a
- * result nobody can tell apart from the right one.
- *
- * Only `-`-prefixed arguments are checked: everything else is a positional,
- * which `query` uses for the statement itself.
- */
-function refuseUnknownOption(usageText: string): (arg: string) => boolean {
-	return (arg: string): boolean => {
-		if (arg.startsWith("-")) {
-			throw new Error(`Unknown option ${arg}.\n\n${usageText}`);
-		}
-		return true;
-	};
-}
+import { runCommand } from "./command.ts";
 
 /**
  * The file `--file` names, resolved against `--root`, or `null` when the
@@ -93,6 +55,68 @@ export function readFormat(value: string | undefined): QueryFormat {
 	return match;
 }
 
+function queryCommand() {
+	return command({
+		name: "query.ts",
+		description: "Run one SQL statement against a workspace and print the result.",
+		examples: [
+			{ description: "Print a query as JSON.", command: 'query.ts --wsid <wsid> --format json "SELECT 1"' },
+			{ description: "Read SQL from a file.", command: "query.ts --wsid <wsid> --file report.sql" },
+		],
+		args: {
+			wsid: option({ long: "wsid", type: string, description: "The workspace to query (required)." }),
+			file: option({
+				long: "file",
+				type: optional(string),
+				description: "Read SQL from this file; otherwise use the statement argument.",
+			}),
+			format: option({
+				long: "format",
+				type: { ...oneOf(QUERY_FORMATS), displayName: QUERY_FORMATS.join("|") },
+				defaultValue: (): QueryFormat => "table",
+				defaultValueIsSerializable: true,
+				description: "Output format.",
+			}),
+			root: option({
+				long: "root",
+				type: optional(string),
+				description: "Where databrill.config.json is looked for (default: cwd).",
+			}),
+			statement: restPositionals({
+				type: string,
+				displayName: "statement",
+				description: "SQL statement (or use --file).",
+			}),
+		},
+		async handler(flags): Promise<number> {
+			const wsid = resolveWsid(flags.wsid);
+
+			const rootDir = resolve(flags.root ?? process.cwd());
+			const positional = flags.statement.join(" ").trim();
+			const path = statementPath(flags.file, rootDir);
+			const statement = path === null ? positional : await Deno.readTextFile(path);
+			if (statement.trim() === "") {
+				throw new Error(
+					`No statement given.\n\n${queryCommand().printHelp({ nodes: [], visitedNodes: new Set() })}`,
+				);
+			}
+
+			const { handles } = openWorkspace(wsid, { rootDir });
+			try {
+				// `runStatement` and not `runQuery`: this command does not know whether it
+				// was handed a SELECT, and an UPDATE with no RETURNING has no rows to show
+				// however many it changed. `formatResult` reports the driver's command tag
+				// for that case rather than the `(0 rows)` that would be a lie.
+				const result = await runStatement(handles.raw, statement);
+				console.log(formatResult(result, flags.format));
+			} finally {
+				await destroyAllTenantDbs();
+			}
+			return 0;
+		},
+	});
+}
+
 /**
  * The command, as a function: parse `args`, do the work, return an exit code.
  *
@@ -101,38 +125,7 @@ export function readFormat(value: string | undefined): QueryFormat {
  * connection is opened, so those cases need no database.
  */
 export async function main(args: readonly string[]): Promise<number> {
-	const flags = parseArgs([...args], {
-		string: ["wsid", "file", "format", "root"],
-		boolean: ["help"],
-		unknown: refuseUnknownOption(usage()),
-	});
-	if (flags.help) {
-		console.log(usage());
-		return 0;
-	}
-	const wsid = resolveWsid(flags.wsid);
-
-	const rootDir = resolve(flags.root ?? process.cwd());
-	const positional = flags._.map((value: string | number): string => String(value)).join(" ").trim();
-	const path = statementPath(flags.file, rootDir);
-	const statement = path === null ? positional : await Deno.readTextFile(path);
-	if (statement.trim() === "") {
-		throw new Error(`No statement given.\n\n${usage()}`);
-	}
-
-	const format = readFormat(flags.format);
-	const { handles } = openWorkspace(wsid, { rootDir });
-	try {
-		// `runStatement` and not `runQuery`: this command does not know whether it
-		// was handed a SELECT, and an UPDATE with no RETURNING has no rows to show
-		// however many it changed. `formatResult` reports the driver's command tag
-		// for that case rather than the `(0 rows)` that would be a lie.
-		const result = await runStatement(handles.raw, statement);
-		console.log(formatResult(result, format));
-	} finally {
-		await destroyAllTenantDbs();
-	}
-	return 0;
+	return await runCommand(queryCommand(), args);
 }
 
 if (import.meta.main) {

@@ -48,10 +48,10 @@ through `$1` placeholders. You do not need `postgres`, `pg`, or a driver of your
 - **`src/lib/workspaces.ts` adds nothing.** It imports `node:fs`, `node:path`, `node:process` and its sibling
   `src/lib/config.ts`, which in turn imports only `node:fs`, `node:path` and `src/lib/amazonConstants.ts`, which imports
   nothing at all. The registry layer is free.
-- **`@std/cli` is NOT on the list**, although this package's own `deno.json` declares it. It is imported only by
-  the two files under `src/cli/`, and a command is run as `deno run -A extern/.../src/cli/query.ts` — where the
+- **`cmd-ts` is NOT on the list**, although this package's own `deno.json` declares it. It is imported only by
+  files under `src/cli/`, and a command is run as `deno run -A extern/.../src/cli/query.ts` — where the
   entry point is inside this package, so Deno discovers *this* package's `deno.json` and resolves against it.
-  You need `@std/cli` in your own map only if you import a file under `src/cli/` from your own code, which the
+  You need `cmd-ts` in your own map only if you import a file under `src/cli/` from your own code, which the
   library halves below exist to make unnecessary.
 
 ## The two task lines
@@ -82,7 +82,7 @@ with the default format, and a mistyped `--wsid` must never silently select anot
 | flag | what it does |
 | --- | --- |
 | `--wsid <wsid>` | Which workspace to run against. Required. |
-| `--file <path>` | Read the statement from a file instead of the argument. |
+| `--file <path>` | A nonempty path takes precedence over the positional SQL statement; otherwise use the statement. |
 | `--format table\|json` | `table` (default) for a terminal, `json` for a pipe. |
 | `--root <dir>` | Where `databrill.config.json` is looked for. Defaults to the current directory. |
 
@@ -92,14 +92,11 @@ The registry entry is taken at its word: the command opens the pool and runs the
 at the wrong connection string is a configuration mistake, and it shows up as recognisably wrong data rather
 than as an error.
 
-**Table names need no schema prefix, and there is no `--qualify`.** Your workspace's login role is
+**Table names need no schema prefix.** Your workspace's login role is
 provisioned with `ALTER ROLE w{wsid}_ro SET search_path = "w{wsid}"`, which the server applies at session
 start — so it survives a transaction-mode pooler, and `FROM amazon_listing_open` finds your table. If a
 statement unexpectedly resolves against `public`, the role is missing that setting; that is a provisioning
 defect to report, not something to work around in the statement.
-
-(There was a `--qualify` flag that rewrote unqualified names with a regular expression. It was removed on
-2026-09-03: it existed for a `search_path` problem the role binding already solves.)
 
 Writes are printed as the driver's command tag rather than as rows, because an `UPDATE` with no `RETURNING`
 has no rows to print however many it changed: `UPDATE 5000`, `DELETE 3`. Only a `SELECT` that matched nothing
@@ -110,7 +107,7 @@ says `(0 rows)`. `--format json` is unaffected — it is for a pipe, and always 
 | flag | what it does |
 | --- | --- |
 | `--brand <slug>` | Read `<root>/brands/<slug>/catalog.json`. |
-| `--file <path>` | Read this seed file instead of the `--brand` convention. |
+| `--file <path>` | A nonempty path takes precedence over `--brand`; otherwise use the brand's `catalog.json`. |
 | `--wsid <wsid>` | Which workspace to write. Required. |
 | `--root <dir>` | Where `brands/` and `databrill.config.json` are looked for. Defaults to the current directory. |
 | `--check` | Validate the seed and write nothing. `--dry-run` is the same flag, under the name the client-repo script used. |
@@ -294,25 +291,21 @@ await destroyAllTenantDbs();
 
 ## TLS: your connection string must say what it wants
 
-These are the two things a repo being converted to this package hits first.
+Remote database URLs must include an explicit `sslmode`. `tenantDb()` refuses a remote URL without one
+before opening a pool. Local hosts (`localhost`, `127.0.0.1`, `::1`, `0.0.0.0`, `*.localhost`) and
+Unix sockets are exempt. Use `sslmode=require` for encryption or `sslmode=disable` for plaintext.
+There is no separate option to disable this check.
 
-1. **A remote host with no `sslmode` is refused, not defaulted.** `tenantDb()` throws before it opens anything.
-   The code this package replaces defaulted that case to encrypted-but-unverified; the connection layer under it
-   now leaves the string alone and lets the driver decide, which is **plaintext**. Rather than re-implement a
-   silent choice or accept a silent downgrade, the ambiguous case is refused. Local hosts (`localhost`,
-   `127.0.0.1`, `::1`, `0.0.0.0`, `*.localhost`, and a socket path with no host) are exempt, exactly as the old
-   default also left them alone. The fix is in the URL: **`sslmode=require`** — which a Supabase pooler URL
-   already carries — or `sslmode=disable` to say plaintext out loud. There is deliberately no option to switch
-   the check off.
-2. **`sslmode=verify-ca` now fails loudly.** It used to mean `rejectUnauthorized: true` against the system trust
-   store. It now throws unless you also pass `ssl: { ca }`, because verifying against a CA with no CA to verify
-   against is not something the driver can do — and passing `ssl` makes your object win outright, which is
-   `verify-full`.
+`createDb()` interprets the TLS options. Its case-sensitive mapping is:
 
-For reference, the full mapping (case-sensitive): `disable` → no TLS; `allow` / `prefer` / `require` →
-encrypted, not verified; `verify-ca` → verified plus a server-identity check, and a throw with no `ca`;
-`verify-full` → verified; anything else, including an empty value, throws. An explicit `ssl` option — `false`
-included — wins outright.
+- `disable`: no TLS.
+- `allow`, `prefer`, `require`: encryption without certificate verification.
+- `verify-full`: certificate and server-identity verification using the system trust store.
+- `verify-ca`: requires an explicit `ssl: { ca }` option. The kit's connection interface accepts only
+  `postgresUrl` and `schema`, so this mode fails through `tenantDb()`. Use `createDb()` directly when
+  custom TLS options are needed; its explicit `ssl` option takes precedence over the URL's mode.
+
+Unrecognized or empty mode values are rejected.
 
 ## `databrill.config.json`
 

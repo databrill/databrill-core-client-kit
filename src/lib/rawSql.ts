@@ -3,13 +3,8 @@
  * cannot express: a customer's own `SELECT`, an `EXPLAIN`, a `count(*)` over a
  * view the generated types do not carry.
  *
- * It runs on {@link TenantPool.query} — the narrow pool surface
- * `@databrill/core-pg-kysely` publishes — and not on a second Kysely instance
- * built over the same pool. A second Kysely is what the older client copies did,
- * and it is wrong twice: it does not compile against `@databrill/core-pg-kysely`
- * from 0.1.5 onwards (the package stopped publishing `pg`'s `Pool` type, so
- * there is nothing to hand a `PostgresDialect`), and even when it did compile it
- * built a whole query-builder stack whose only use was `sql.raw`.
+ * It runs on {@link TenantPool.query}, the pool interface published by
+ * `@databrill/core-pg-kysely`, sharing the typed database's connection pool.
  *
  * Reads only. Nothing here writes, and nothing here interpolates a value into
  * the statement text: values go through `$1`-style placeholders, which is what
