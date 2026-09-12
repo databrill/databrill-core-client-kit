@@ -28,16 +28,14 @@
  * ## Opening a connection for a wsid is TWO lines, on purpose
  *
  * ```ts
- * const { database } = getWorkspace("123456789");
- * const { db, raw } = tenantDb({ postgresUrl: database.postgresUrl, schema: database.schema });
+ * const { database } = yield* getWorkspace("123456789");
+ * const { db, raw } = yield* tenantDb({ postgresUrl: database.postgresUrl, schema: database.schema });
  * ```
  *
- * There is deliberately no `tenantDbForWsid()` here. It would be the only thing
- * in this file importing `./tenantDb.ts`, and this file's whole dependency
- * footprint today is `node:` builtins plus `./config.ts` — so it adds NOTHING to
- * the list of bare specifiers a consumer's import map has to carry, and the
- * regression test below can copy it to a temp directory and import it with no
- * import map at all. A one-line convenience is not worth either of those.
+ * There is deliberately no `tenantDbForWsid()` here. Database acquisition
+ * belongs in the caller that already needs both halves. This module uses Node
+ * builtins, Effect and shared config sources; its relocation test verifies the
+ * same caller-relative discovery with those declared dependencies available.
  *
  * ## What stayed behind in the client repos
  *
@@ -47,10 +45,12 @@
  * discovery and diagnostics, never for selecting a target.
  */
 
-import { statSync } from "node:fs";
+import { Effect } from "effect";
+import { stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import process from "node:process";
 import { type Config, loadConfig, type Workspace } from "./config.ts";
+import { tryOrOperationError, tryPromiseOrOperationError } from "./effects.ts";
 
 export type { Workspace };
 
@@ -83,12 +83,14 @@ export interface ConfigLocation {
 }
 
 /** Does `path` name an existing regular file? */
-function isFile(path: string): boolean {
-	try {
-		return statSync(path).isFile();
-	} catch {
-		return false;
-	}
+function isFile(path: string): Effect.Effect<boolean, Error> {
+	return tryPromiseOrOperationError(() => stat(path)).pipe(
+		Effect.map((info) => info.isFile()),
+		Effect.catchIf(
+			(error) => "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR"),
+			() => Effect.succeed(false),
+		),
+	);
 }
 
 /**
@@ -108,32 +110,34 @@ function isFile(path: string): boolean {
  * Do not reorder these and do not add a fourth step derived from
  * `import.meta.url`; see the module docblock.
  */
-export function resolveConfigPath(opts: WorkspaceConfigOptions = {}): ConfigLocation {
-	const rootDir = resolve(opts.rootDir ?? process.cwd());
+export function resolveConfigPath(opts: WorkspaceConfigOptions = {}): Effect.Effect<ConfigLocation, Error> {
+	return Effect.gen(function* () {
+		const rootDir = yield* tryOrOperationError(() => resolve(opts.rootDir ?? process.cwd()));
 
-	if (opts.configPath !== undefined && opts.configPath !== "") {
-		const path = isAbsolute(opts.configPath) ? opts.configPath : resolve(rootDir, opts.configPath);
-		return { path, searchedFrom: rootDir };
-	}
-
-	const fromEnv = process.env["DATABRILL_CONFIG"];
-	if (fromEnv !== undefined && fromEnv !== "") {
-		const path = isAbsolute(fromEnv) ? fromEnv : resolve(rootDir, fromEnv);
-		return { path, searchedFrom: rootDir };
-	}
-
-	let directory = rootDir;
-	for (;;) {
-		const candidate = join(directory, CONFIG_FILE_NAME);
-		if (isFile(candidate)) {
-			return { path: candidate, searchedFrom: rootDir };
+		if (opts.configPath !== undefined && opts.configPath !== "") {
+			const path = isAbsolute(opts.configPath) ? opts.configPath : resolve(rootDir, opts.configPath);
+			return { path, searchedFrom: rootDir };
 		}
-		const parent = dirname(directory);
-		if (parent === directory) {
-			return { path: null, searchedFrom: rootDir };
+
+		const fromEnv = yield* tryOrOperationError(() => process.env["DATABRILL_CONFIG"]);
+		if (fromEnv !== undefined && fromEnv !== "") {
+			const path = isAbsolute(fromEnv) ? fromEnv : resolve(rootDir, fromEnv);
+			return { path, searchedFrom: rootDir };
 		}
-		directory = parent;
-	}
+
+		let directory = rootDir;
+		for (;;) {
+			const candidate = join(directory, CONFIG_FILE_NAME);
+			if (yield* isFile(candidate)) {
+				return { path: candidate, searchedFrom: rootDir };
+			}
+			const parent = dirname(directory);
+			if (parent === directory) {
+				return { path: null, searchedFrom: rootDir };
+			}
+			directory = parent;
+		}
+	});
 }
 
 /**
@@ -149,40 +153,33 @@ let cached: { readonly path: string; readonly config: Config } | null = null;
 /**
  * Load (or reuse) the workspace config.
  *
- * `loadConfig()` reads the path from `DATABRILL_CONFIG` itself and takes no
- * argument, so the resolved path is handed to it through the environment and the
- * previous value is put back afterwards: this function answers "which config
- * does THIS call mean", and leaving the variable changed would make that answer
- * stick to every later caller, including ones that never asked.
+ * Pass the resolved path directly to `loadConfig()` so concurrent reads never
+ * need to change the process environment. The cache changes only on execution.
  */
-export function workspaceConfig(opts: WorkspaceConfigOptions = {}): Config {
-	const location = resolveConfigPath(opts);
-	if (location.path === null) {
-		throw new Error(
-			`No ${CONFIG_FILE_NAME} found: searched ${location.searchedFrom} and every directory above it. ` +
-				`Set DATABRILL_CONFIG, pass configPath, or run from a directory inside the repo that has one.`,
-		);
-	}
-	if (cached !== null && cached.path === location.path) {
-		return cached.config;
-	}
+export function workspaceConfig(opts: WorkspaceConfigOptions = {}): Effect.Effect<Config, Error> {
+	return Effect.gen(function* () {
+		const location = yield* resolveConfigPath(opts);
+		if (location.path === null) {
+			return yield* Effect.fail(
+				new Error(
+					`No ${CONFIG_FILE_NAME} found: searched ${location.searchedFrom} and every directory above it. ` +
+						`Set DATABRILL_CONFIG, pass configPath, or run from a directory inside the repo that has one.`,
+				),
+			);
+		}
+		if (cached !== null && cached.path === location.path) {
+			return cached.config;
+		}
 
-	const previous = process.env["DATABRILL_CONFIG"];
-	process.env["DATABRILL_CONFIG"] = location.path;
-	try {
-		const config = loadConfig();
+		const config = yield* loadConfig(location.path);
 		if (config === null) {
-			throw new Error(`Could not load ${location.path}: the config loader read no configuration from it.`);
+			return yield* Effect.fail(
+				new Error(`Could not load ${location.path}: the config loader read no configuration from it.`),
+			);
 		}
 		cached = { path: location.path, config };
 		return config;
-	} finally {
-		if (previous === undefined) {
-			delete process.env["DATABRILL_CONFIG"];
-		} else {
-			process.env["DATABRILL_CONFIG"] = previous;
-		}
-	}
+	});
 }
 
 /** Forget the loaded config, so the next call reads the file again. */
@@ -199,28 +196,32 @@ export function resetWorkspaceConfig(): void {
  * such messages comparable. Wsids are nine-digit integers of equal width, so
  * lexicographic and numeric order are the same thing here.
  */
-export function listWsids(opts: WorkspaceConfigOptions = {}): readonly string[] {
-	return Object.keys(workspaceConfig(opts).workspaces).sort();
+export function listWsids(opts: WorkspaceConfigOptions = {}): Effect.Effect<readonly string[], Error> {
+	return Effect.map(workspaceConfig(opts), (config) => Object.keys(config.workspaces).sort());
 }
 
-/** One configured workspace, by wsid. Throws naming the configured wsids when there is no such one. */
-export function getWorkspace(wsid: string, opts: WorkspaceConfigOptions = {}): Workspace {
-	const config = workspaceConfig(opts);
-	const workspace = config.workspaces[wsid];
-	if (workspace === undefined) {
-		const known = Object.keys(config.workspaces);
-		throw new Error(
-			`No workspace ${wsid} in the loaded configuration. Configured: ${
-				known.length === 0 ? "(none)" : known.join(", ")
-			}.`,
-		);
-	}
-	return workspace;
+/** One configured workspace, by wsid. Fails naming the configured wsids when there is no such one. */
+export function getWorkspace(wsid: string, opts: WorkspaceConfigOptions = {}): Effect.Effect<Workspace, Error> {
+	return Effect.gen(function* () {
+		const config = yield* workspaceConfig(opts);
+		const workspace = config.workspaces[wsid];
+		if (workspace === undefined) {
+			const known = Object.keys(config.workspaces);
+			return yield* Effect.fail(
+				new Error(
+					`No workspace ${wsid} in the loaded configuration. Configured: ${
+						known.length === 0 ? "(none)" : known.join(", ")
+					}.`,
+				),
+			);
+		}
+		return workspace;
+	});
 }
 
 /** The merchant ids configured for a workspace. */
-export function merchantIds(wsid: string, opts: WorkspaceConfigOptions = {}): readonly string[] {
-	return Object.keys(getWorkspace(wsid, opts).merchants);
+export function merchantIds(wsid: string, opts: WorkspaceConfigOptions = {}): Effect.Effect<readonly string[], Error> {
+	return Effect.map(getWorkspace(wsid, opts), (workspace) => Object.keys(workspace.merchants));
 }
 
 /**
@@ -234,12 +235,14 @@ export function merchantIds(wsid: string, opts: WorkspaceConfigOptions = {}): re
  * `"us"` would otherwise deduplicate to two entries against a config that writes
  * `"US"`, and match neither.
  */
-export function countries(wsid: string, opts: WorkspaceConfigOptions = {}): readonly string[] {
-	const found = new Set<string>();
-	for (const merchant of Object.values(getWorkspace(wsid, opts).merchants)) {
-		for (const country of merchant.countries) {
-			found.add(country.toUpperCase());
+export function countries(wsid: string, opts: WorkspaceConfigOptions = {}): Effect.Effect<readonly string[], Error> {
+	return Effect.map(getWorkspace(wsid, opts), (workspace) => {
+		const found = new Set<string>();
+		for (const merchant of Object.values(workspace.merchants)) {
+			for (const country of merchant.countries) {
+				found.add(country.toUpperCase());
+			}
 		}
-	}
-	return [...found].sort();
+		return [...found].sort();
+	});
 }

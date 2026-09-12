@@ -92,6 +92,8 @@
  */
 
 import type { Json, TenantDb } from "@databrill/core-pg-kysely";
+import { Cause, Effect, Either, Exit } from "effect";
+import { tryOrOperationError, tryPromiseOrOperationError } from "./effects.ts";
 import { makeCompositeKey } from "./makeCompositeKey.ts";
 
 /**
@@ -495,19 +497,26 @@ function reportDuplicates(key: string, values: readonly string[], problems: stri
 
 /**
  * Check an already-parsed seed and return it in the shape {@link seedCatalog}
- * writes, or throw a {@link SeedValidationError} listing everything wrong.
+ * writes, or fail with a {@link SeedValidationError} listing everything wrong.
  *
  * Pure: no file is read, no connection is opened, and the same input always
  * gives the same answer — which is what lets the two rules that matter most (an
  * ASIN's `msku` naming a declared variant, and an ASIN that may be an ISBN) be
  * tested without a database.
  */
-export function parseCatalog(value: unknown, options: ParseCatalogOptions = {}): Catalog {
+export function parseCatalog(value: unknown, options: ParseCatalogOptions = {}): Either.Either<Catalog, Error> {
+	return Either.flatMap(
+		tryOrOperationError(() => parseCatalogSub(value, options)),
+		(result) => result instanceof SeedValidationError ? Either.left(result) : Either.right(result),
+	);
+}
+
+function parseCatalogSub(value: unknown, options: ParseCatalogOptions = {}): Catalog | SeedValidationError {
 	const source = options.source ?? "the seed";
 	const problems: string[] = [];
 
 	if (!isRecord(value)) {
-		throw new SeedValidationError(source, ["expected a JSON object at the top level"]);
+		return new SeedValidationError(source, ["expected a JSON object at the top level"]);
 	}
 
 	for (const key of Object.keys(value)) {
@@ -555,7 +564,11 @@ export function parseCatalog(value: unknown, options: ParseCatalogOptions = {}):
 			description: optionalString(row, "description", path, problems),
 		});
 	}
-	reportDuplicates("properties", properties.map((row: OntologyPropertySeed): string => row.property), problems);
+	reportDuplicates(
+		"properties",
+		properties.map((row: OntologyPropertySeed): string => row.property),
+		problems,
+	);
 
 	const categories: OntologyCategorySeed[] = [];
 	for (const [index, row] of rowsOf(value, "categories", problems).entries()) {
@@ -567,7 +580,11 @@ export function parseCatalog(value: unknown, options: ParseCatalogOptions = {}):
 			dataResolved: nullableObjectField(row, "dataResolved", path, problems),
 		});
 	}
-	reportDuplicates("categories", categories.map((row: OntologyCategorySeed): string => row.category), problems);
+	reportDuplicates(
+		"categories",
+		categories.map((row: OntologyCategorySeed): string => row.category),
+		problems,
+	);
 	const knownCategories = new Set(categories.map((row: OntologyCategorySeed): string => row.category));
 
 	const variants: OntologyVariantSeed[] = [];
@@ -662,7 +679,9 @@ export function parseCatalog(value: unknown, options: ParseCatalogOptions = {}):
 		// `null` when the value is not one of the five; the scopeId rules below
 		// depend on knowing which scope this is, so they are skipped rather than
 		// run against a substituted one and reported as a second problem.
-		const declaredScope = enumField(row, "scope", ATTRIBUTE_SCOPES, path, problems) as AttributeScope | null;
+		const declaredScope = enumField(row, "scope", ATTRIBUTE_SCOPES, path, problems) as
+			| AttributeScope
+			| null;
 		const scope: AttributeScope = declaredScope ?? "COUNTRY";
 		// `merchantId` and `scopeId` are primary-key columns and NOT NULL, so the
 		// absent case is the empty string rather than null — "" is a real value
@@ -684,7 +703,9 @@ export function parseCatalog(value: unknown, options: ParseCatalogOptions = {}):
 		}
 		const country = upperCaseField(row, "country", path, problems);
 		if (country !== "" && !/^[A-Z]{2}$/.test(country)) {
-			problems.push(`${path}.country: expected a two-letter marketplace code, got ${JSON.stringify(country)}`);
+			problems.push(
+				`${path}.country: expected a two-letter marketplace code, got ${JSON.stringify(country)}`,
+			);
 		}
 		const attribute = upperCaseField(row, "attribute", path, problems);
 		const dateFirst = requiredString(row, "dateFirst", path, problems);
@@ -736,13 +757,20 @@ export function parseCatalog(value: unknown, options: ParseCatalogOptions = {}):
 	reportDuplicates(
 		"attributes",
 		attributes.map((row: AmazonAttributeSeed): string =>
-			makeCompositeKey(row.merchantId, row.scope, row.scopeId, row.country, row.attribute, row.dateFirst)
+			makeCompositeKey(
+				row.merchantId,
+				row.scope,
+				row.scopeId,
+				row.country,
+				row.attribute,
+				row.dateFirst,
+			)
 		),
 		problems,
 	);
 
 	if (problems.length > 0) {
-		throw new SeedValidationError(source, problems);
+		return new SeedValidationError(source, problems);
 	}
 	return { wsid, properties, categories, variants, families, asins, attributes };
 }
@@ -795,8 +823,9 @@ function resolveVariantData(
  * one transaction.
  *
  * ```ts
- * const handles = tenantDb({ postgresUrl, schema: "w123456789" });
- * const written = await seedCatalog(handles.write, parseCatalog(JSON.parse(text)));
+ * const handles = yield* tenantDb({ postgresUrl, schema: "w123456789" });
+ * const seed = yield* parseCatalog(mySeedObject);
+ * const written = yield* seedCatalog(handles.write, seed);
  * ```
  *
  * Takes the `write` surface rather than the whole handle: writing brand
@@ -809,174 +838,216 @@ function resolveVariantData(
  * seed knows nothing about, and `ON DELETE RESTRICT` would fail the whole
  * transaction rather than tell you which.
  */
-export function seedCatalog(write: TenantDb["write"], seed: Catalog): Promise<SeedCatalogResult> {
-	const now = Temporal.Now.instant().toString();
-	const categoryData = new Map<string, Readonly<Record<string, Json>>>(
-		seed.categories.map((row: OntologyCategorySeed): [string, Readonly<Record<string, Json>>] => [
-			row.category,
-			resolveCategoryData(row),
-		]),
+export function seedCatalog(write: TenantDb["write"], seed: Catalog): Effect.Effect<SeedCatalogResult, Error> {
+	return Effect.uninterruptibleMask((restore) =>
+		Effect.gen(function* () {
+			const now = yield* tryOrOperationError(() => Temporal.Now.instant().toString());
+			const categoryData = yield* tryOrOperationError(() =>
+				new Map<string, Readonly<Record<string, Json>>>(
+					seed.categories.map((row: OntologyCategorySeed): [string, Readonly<Record<string, Json>>] => [
+						row.category,
+						resolveCategoryData(row),
+					]),
+				)
+			);
+
+			// Controlled transactions let interruption wait for the active statement,
+			// then finish rollback before the caller starts closing the pool.
+			const trx = yield* tryPromiseOrOperationError(() => write.startTransaction().execute());
+			const result = yield* Effect.exit(restore(Effect.gen(function* () {
+				if (seed.properties.length > 0) {
+					yield* Effect.uninterruptible(tryPromiseOrOperationError(() =>
+						trx.insertInto("brand_config_ontology_metadata")
+							.values(seed.properties.map((row: OntologyPropertySeed) => ({
+								property: row.property,
+								valueType: row.valueType,
+								appliesTo: row.appliesTo,
+								valuesAllowed: row.valuesAllowed === null ? null : jsonParam(row.valuesAllowed),
+								description: row.description,
+								updatedAt: now,
+							})))
+							.onConflict((oc) =>
+								oc.column("property").doUpdateSet((eb) => ({
+									valueType: eb.ref("excluded.valueType"),
+									appliesTo: eb.ref("excluded.appliesTo"),
+									valuesAllowed: eb.ref("excluded.valuesAllowed"),
+									description: eb.ref("excluded.description"),
+									updatedAt: now,
+								}))
+							)
+							.execute()
+					));
+				}
+
+				if (seed.categories.length > 0) {
+					yield* Effect.uninterruptible(tryPromiseOrOperationError(() =>
+						trx.insertInto("brand_config_ontology_category")
+							.values(seed.categories.map((row: OntologyCategorySeed) => ({
+								category: row.category,
+								description: row.description,
+								data: jsonParam(row.data),
+								dataResolved: jsonParam(resolveCategoryData(row)),
+								updatedAt: now,
+							})))
+							.onConflict((oc) =>
+								oc.column("category").doUpdateSet((eb) => ({
+									description: eb.ref("excluded.description"),
+									data: eb.ref("excluded.data"),
+									dataResolved: eb.ref("excluded.dataResolved"),
+									updatedAt: now,
+								}))
+							)
+							.execute()
+					));
+				}
+
+				// Variants before ASINs: brand_config_amazon_asin.msku references them.
+				if (seed.variants.length > 0) {
+					yield* Effect.uninterruptible(tryPromiseOrOperationError(() =>
+						trx.insertInto("brand_config_ontology_variant")
+							.values(seed.variants.map((row: OntologyVariantSeed) => ({
+								msku: row.msku,
+								category: row.category,
+								data: jsonParam(row.data),
+								dataResolved: jsonParam(resolveVariantData(row, categoryData.get(row.category))),
+								updatedAt: now,
+							})))
+							.onConflict((oc) =>
+								oc.column("msku").doUpdateSet((eb) => ({
+									category: eb.ref("excluded.category"),
+									data: eb.ref("excluded.data"),
+									dataResolved: eb.ref("excluded.dataResolved"),
+									updatedAt: now,
+								}))
+							)
+							.execute()
+					));
+				}
+
+				if (seed.families.length > 0) {
+					yield* Effect.uninterruptible(tryPromiseOrOperationError(() =>
+						trx.insertInto("brand_config_amazon_family")
+							.values(seed.families.map((row: AmazonFamilySeed) => ({
+								family: row.family,
+								category: row.category,
+								msku: row.msku,
+								label: row.label,
+								description: row.description,
+								updatedAt: now,
+							})))
+							.onConflict((oc) =>
+								oc.column("family").doUpdateSet((eb) => ({
+									category: eb.ref("excluded.category"),
+									msku: eb.ref("excluded.msku"),
+									label: eb.ref("excluded.label"),
+									description: eb.ref("excluded.description"),
+									updatedAt: now,
+								}))
+							)
+							.execute()
+					));
+				}
+
+				if (seed.asins.length > 0) {
+					yield* Effect.uninterruptible(tryPromiseOrOperationError(() =>
+						trx.insertInto("brand_config_amazon_asin")
+							.values(seed.asins.map((row: AmazonAsinSeed) => ({
+								asin: row.asin,
+								msku: row.msku,
+								family: row.family,
+								countryToFamily: row.countryToFamily === null ? null : jsonParam(row.countryToFamily),
+								labelInFamily: row.labelInFamily,
+								countryToLabelInFamily: row.countryToLabelInFamily === null
+									? null
+									: jsonParam(row.countryToLabelInFamily),
+								labelStandalone: row.labelStandalone,
+								description: row.description,
+								updatedAt: now,
+							})))
+							.onConflict((oc) =>
+								oc.column("asin").doUpdateSet((eb) => ({
+									msku: eb.ref("excluded.msku"),
+									family: eb.ref("excluded.family"),
+									countryToFamily: eb.ref("excluded.countryToFamily"),
+									labelInFamily: eb.ref("excluded.labelInFamily"),
+									countryToLabelInFamily: eb.ref("excluded.countryToLabelInFamily"),
+									labelStandalone: eb.ref("excluded.labelStandalone"),
+									description: eb.ref("excluded.description"),
+									updatedAt: now,
+								}))
+							)
+							.execute()
+					));
+				}
+
+				if (seed.attributes.length > 0) {
+					yield* Effect.uninterruptible(tryPromiseOrOperationError(() =>
+						trx.insertInto("brand_config_amazon_attributes")
+							.values(seed.attributes.map((row: AmazonAttributeSeed) => ({
+								merchantId: row.merchantId,
+								scope: row.scope,
+								scopeId: row.scopeId,
+								country: row.country,
+								attribute: row.attribute,
+								dateFirst: row.dateFirst,
+								dateLast: row.dateLast,
+								value: row.value,
+								currency: row.currency,
+								source: row.source,
+								confidence: row.confidence,
+								notes: row.notes,
+								updatedAt: now,
+							})))
+							// All six primary-key columns, and every one of them matters: the
+							// same attribute for the same scope over a DIFFERENT interval is a
+							// different row, so `dateFirst` being part of the key is what lets a
+							// price history accumulate instead of overwriting itself.
+							.onConflict((oc) =>
+								oc.columns(["merchantId", "scope", "scopeId", "country", "attribute", "dateFirst"])
+									.doUpdateSet((eb) => ({
+										dateLast: eb.ref("excluded.dateLast"),
+										value: eb.ref("excluded.value"),
+										currency: eb.ref("excluded.currency"),
+										source: eb.ref("excluded.source"),
+										confidence: eb.ref("excluded.confidence"),
+										notes: eb.ref("excluded.notes"),
+										updatedAt: now,
+									}))
+							)
+							.execute()
+					));
+				}
+
+				return {
+					properties: seed.properties.length,
+					categories: seed.categories.length,
+					variants: seed.variants.length,
+					families: seed.families.length,
+					asins: seed.asins.length,
+					attributes: seed.attributes.length,
+				};
+			})));
+			const finished = yield* Effect.exit(tryPromiseOrOperationError(() =>
+				Exit.isSuccess(result) ? trx.commit().execute() : trx.rollback().execute()
+			));
+
+			if (Exit.isFailure(result)) {
+				return yield* Effect.failCause(
+					Exit.isFailure(finished) ? Cause.sequential(result.cause, finished.cause) : result.cause,
+				);
+			}
+			if (Exit.isFailure(finished)) {
+				if (!trx.isCommitted && !trx.isRolledBack) {
+					const rollback = yield* Effect.exit(tryPromiseOrOperationError(() =>
+						trx.rollback().execute()
+					));
+					if (Exit.isFailure(rollback)) {
+						return yield* Effect.failCause(Cause.sequential(finished.cause, rollback.cause));
+					}
+				}
+				return yield* Effect.failCause(finished.cause);
+			}
+			return result.value;
+		})
 	);
-
-	return write.transaction().execute(async (trx): Promise<SeedCatalogResult> => {
-		if (seed.properties.length > 0) {
-			await trx.insertInto("brand_config_ontology_metadata")
-				.values(seed.properties.map((row: OntologyPropertySeed) => ({
-					property: row.property,
-					valueType: row.valueType,
-					appliesTo: row.appliesTo,
-					valuesAllowed: row.valuesAllowed === null ? null : jsonParam(row.valuesAllowed),
-					description: row.description,
-					updatedAt: now,
-				})))
-				.onConflict((oc) =>
-					oc.column("property").doUpdateSet((eb) => ({
-						valueType: eb.ref("excluded.valueType"),
-						appliesTo: eb.ref("excluded.appliesTo"),
-						valuesAllowed: eb.ref("excluded.valuesAllowed"),
-						description: eb.ref("excluded.description"),
-						updatedAt: now,
-					}))
-				)
-				.execute();
-		}
-
-		if (seed.categories.length > 0) {
-			await trx.insertInto("brand_config_ontology_category")
-				.values(seed.categories.map((row: OntologyCategorySeed) => ({
-					category: row.category,
-					description: row.description,
-					data: jsonParam(row.data),
-					dataResolved: jsonParam(resolveCategoryData(row)),
-					updatedAt: now,
-				})))
-				.onConflict((oc) =>
-					oc.column("category").doUpdateSet((eb) => ({
-						description: eb.ref("excluded.description"),
-						data: eb.ref("excluded.data"),
-						dataResolved: eb.ref("excluded.dataResolved"),
-						updatedAt: now,
-					}))
-				)
-				.execute();
-		}
-
-		// Variants before ASINs: brand_config_amazon_asin.msku references them.
-		if (seed.variants.length > 0) {
-			await trx.insertInto("brand_config_ontology_variant")
-				.values(seed.variants.map((row: OntologyVariantSeed) => ({
-					msku: row.msku,
-					category: row.category,
-					data: jsonParam(row.data),
-					dataResolved: jsonParam(resolveVariantData(row, categoryData.get(row.category))),
-					updatedAt: now,
-				})))
-				.onConflict((oc) =>
-					oc.column("msku").doUpdateSet((eb) => ({
-						category: eb.ref("excluded.category"),
-						data: eb.ref("excluded.data"),
-						dataResolved: eb.ref("excluded.dataResolved"),
-						updatedAt: now,
-					}))
-				)
-				.execute();
-		}
-
-		if (seed.families.length > 0) {
-			await trx.insertInto("brand_config_amazon_family")
-				.values(seed.families.map((row: AmazonFamilySeed) => ({
-					family: row.family,
-					category: row.category,
-					msku: row.msku,
-					label: row.label,
-					description: row.description,
-					updatedAt: now,
-				})))
-				.onConflict((oc) =>
-					oc.column("family").doUpdateSet((eb) => ({
-						category: eb.ref("excluded.category"),
-						msku: eb.ref("excluded.msku"),
-						label: eb.ref("excluded.label"),
-						description: eb.ref("excluded.description"),
-						updatedAt: now,
-					}))
-				)
-				.execute();
-		}
-
-		if (seed.asins.length > 0) {
-			await trx.insertInto("brand_config_amazon_asin")
-				.values(seed.asins.map((row: AmazonAsinSeed) => ({
-					asin: row.asin,
-					msku: row.msku,
-					family: row.family,
-					countryToFamily: row.countryToFamily === null ? null : jsonParam(row.countryToFamily),
-					labelInFamily: row.labelInFamily,
-					countryToLabelInFamily: row.countryToLabelInFamily === null
-						? null
-						: jsonParam(row.countryToLabelInFamily),
-					labelStandalone: row.labelStandalone,
-					description: row.description,
-					updatedAt: now,
-				})))
-				.onConflict((oc) =>
-					oc.column("asin").doUpdateSet((eb) => ({
-						msku: eb.ref("excluded.msku"),
-						family: eb.ref("excluded.family"),
-						countryToFamily: eb.ref("excluded.countryToFamily"),
-						labelInFamily: eb.ref("excluded.labelInFamily"),
-						countryToLabelInFamily: eb.ref("excluded.countryToLabelInFamily"),
-						labelStandalone: eb.ref("excluded.labelStandalone"),
-						description: eb.ref("excluded.description"),
-						updatedAt: now,
-					}))
-				)
-				.execute();
-		}
-
-		if (seed.attributes.length > 0) {
-			await trx.insertInto("brand_config_amazon_attributes")
-				.values(seed.attributes.map((row: AmazonAttributeSeed) => ({
-					merchantId: row.merchantId,
-					scope: row.scope,
-					scopeId: row.scopeId,
-					country: row.country,
-					attribute: row.attribute,
-					dateFirst: row.dateFirst,
-					dateLast: row.dateLast,
-					value: row.value,
-					currency: row.currency,
-					source: row.source,
-					confidence: row.confidence,
-					notes: row.notes,
-					updatedAt: now,
-				})))
-				// All six primary-key columns, and every one of them matters: the
-				// same attribute for the same scope over a DIFFERENT interval is a
-				// different row, so `dateFirst` being part of the key is what lets a
-				// price history accumulate instead of overwriting itself.
-				.onConflict((oc) =>
-					oc.columns(["merchantId", "scope", "scopeId", "country", "attribute", "dateFirst"])
-						.doUpdateSet((eb) => ({
-							dateLast: eb.ref("excluded.dateLast"),
-							value: eb.ref("excluded.value"),
-							currency: eb.ref("excluded.currency"),
-							source: eb.ref("excluded.source"),
-							confidence: eb.ref("excluded.confidence"),
-							notes: eb.ref("excluded.notes"),
-							updatedAt: now,
-						}))
-				)
-				.execute();
-		}
-
-		return {
-			properties: seed.properties.length,
-			categories: seed.categories.length,
-			variants: seed.variants.length,
-			families: seed.families.length,
-			asins: seed.asins.length,
-			attributes: seed.attributes.length,
-		};
-	});
 }

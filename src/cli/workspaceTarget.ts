@@ -16,18 +16,19 @@
  * in it never changes the request contract.
  */
 
+import { Effect, Either } from "effect";
+import { tenantDb, type TenantDbOptions, type TenantHandles } from "../lib/tenantDb.ts";
 import { getWorkspace, type WorkspaceConfigOptions } from "../lib/workspaces.ts";
-import { tenantDb, type TenantHandles } from "../lib/tenantDb.ts";
 
 /**
  * The explicit wsid to act on. Missing and blank values are always refused.
  */
-export function resolveWsid(explicit: string | undefined): string {
+export function resolveWsid(explicit: string | undefined): Either.Either<string, Error> {
 	const wsid = explicit?.trim() ?? "";
 	if (wsid !== "") {
-		return wsid;
+		return Either.right(wsid);
 	}
-	throw new Error("Pass --wsid <wsid>; every workspace operation must name its target explicitly.");
+	return Either.left(new Error("Pass --wsid <wsid>; every workspace operation must name its target explicitly."));
 }
 
 /** What a command needs to act on one workspace. */
@@ -48,9 +49,12 @@ export interface WorkspaceTarget {
 export function openWorkspace(
 	explicit: string | undefined,
 	opts: WorkspaceConfigOptions = {},
-): WorkspaceTarget {
-	const wsid = resolveWsid(explicit);
-	const { database } = getWorkspace(wsid, opts);
-	const handles = tenantDb({ postgresUrl: database.postgresUrl, schema: database.schema });
-	return { wsid, schema: database.schema, handles };
+	dbOptions: TenantDbOptions = {},
+): Effect.Effect<WorkspaceTarget, Error> {
+	return Effect.gen(function* () {
+		const wsid = yield* resolveWsid(explicit);
+		const { database } = yield* getWorkspace(wsid, opts);
+		const handles = yield* tenantDb({ postgresUrl: database.postgresUrl, schema: database.schema }, dbOptions);
+		return { wsid, schema: database.schema, handles };
+	});
 }

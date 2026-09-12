@@ -1,7 +1,7 @@
 /**
  * Opening a tenant database, and reusing the pool once it is open.
  *
- * This is the dependency-free core of the kit: it takes explicit connection
+ * This is the registry-independent core of the kit: it takes explicit connection
  * information — a Postgres URL and a schema — and knows nothing about
  * `databrill.config.json`, wsids or any other registry convention. The layer
  * that resolves a wsid to a `{ postgresUrl, schema }` is `./workspaces.ts`, and
@@ -51,6 +51,9 @@
  */
 
 import { createDb, type TenantDb } from "@databrill/core-pg-kysely";
+import { Cause, Effect, Either, Exit } from "effect";
+import { tryOrOperationError } from "./effects.ts";
+import { makeCompositeKey } from "./makeCompositeKey.ts";
 import { createRawReader, type RawReader } from "./rawSql.ts";
 
 /** Where a tenant database is and which schema holds its tables. */
@@ -65,59 +68,43 @@ export interface TenantHandles extends TenantDb {
 }
 
 /**
- * Where {@link tenantDb} keeps the handles it has already opened.
- *
- * Memoisation is a PARAMETER here, not a constant, because the right strategy is
- * a property of the consumer and this package does not know which consumer it is
- * in. Both real cases exist today: a CLI runs once and exits, so a plain
- * module-level map (or none at all) is right; a Vite dev server re-executes
- * server modules on every HMR update, so a module-level map is a fresh map every
- * edit and leaks a pool per keystroke — that one needs a store anchored on
- * `globalThis`. Picking either one inside the package makes the other consumer
- * wrong, so the package picks neither.
- *
- * A plain `Map<string, TenantHandles>` satisfies this interface structurally,
- * which is the point: "give me my own store" needs no factory from here.
+ * Reusable handles indexed by connection URL and schema.
+ * A plain Map supports both isolated operation scopes and caches retained across HMR.
+ * Use acquireTenantDbCache for scoped ownership; module/global caches require explicit cleanup.
  */
-export interface TenantDbStore {
-	get(key: string): TenantHandles | undefined;
-	set(key: string, handles: TenantHandles): void;
-	delete(key: string): void;
-	values(): Iterable<TenantHandles>;
-	clear(): void;
-}
+export type TenantDbCache = Map<string, TenantHandles>;
 
 /** Options common to every entry point that opens a tenant database. */
 export interface TenantDbOptions {
 	/**
 	 * Where to look for an already-open handle, and where to record a new one.
-	 * Defaults to {@link moduleTenantDbStore}.
+	 * Defaults to {@link moduleTenantDbCache}.
 	 */
-	readonly store?: TenantDbStore;
+	readonly cache?: TenantDbCache;
 }
 
-/** The process-wide default store: right for a CLI, wrong under HMR. */
-const moduleStore: TenantDbStore = new Map<string, TenantHandles>();
+/** The default cache belongs to this module instance; callers manage its cleanup. */
+const moduleCache: TenantDbCache = new Map<string, TenantHandles>();
 
 /**
- * The default store — one `Map` per module instance.
+ * The default cache — one `Map` per module instance.
  *
  * Correct whenever the module is instantiated once: a CLI, a long-running
  * server started from a built bundle, a test run. Under a dev server that
  * re-executes server modules this map is replaced on every reload and the pools
- * it held are never destroyed; use {@link globalTenantDbStore} there.
+ * it held are never destroyed; use {@link globalTenantDbCache} there.
  */
-export function moduleTenantDbStore(): TenantDbStore {
-	return moduleStore;
+export function moduleTenantDbCache(): TenantDbCache {
+	return moduleCache;
 }
 
-/** A fresh, unshared store. Passing a new one per call disables reuse entirely. */
-export function newTenantDbStore(): TenantDbStore {
+/** A fresh, unshared cache. Passing a new one per call disables reuse entirely. */
+export function newTenantDbCache(): TenantDbCache {
 	return new Map<string, TenantHandles>();
 }
 
 /**
- * A store anchored on `globalThis` under a `Symbol.for` key, so it survives a
+ * A cache anchored on `globalThis` under a `Symbol.for` key, so it survives a
  * module being re-executed — which is what a Vite/HMR dev server does to every
  * server module on every edit.
  *
@@ -125,15 +112,17 @@ export function newTenantDbStore(): TenantDbStore {
  * instances by design, and a symbol key cannot collide with a consumer's own
  * global.
  */
-export function globalTenantDbStore(name = "databrill.client-kit.tenantDb"): TenantDbStore {
-	const key = Symbol.for(name);
-	const existing: unknown = Reflect.get(globalThis, key);
-	if (existing instanceof Map) {
-		return existing;
-	}
-	const created = new Map<string, TenantHandles>();
-	Reflect.set(globalThis, key, created);
-	return created;
+export function globalTenantDbCache(name = "databrill.client-kit.tenantDb"): Either.Either<TenantDbCache, Error> {
+	return tryOrOperationError(() => {
+		const key = Symbol.for(name);
+		const existing: unknown = Reflect.get(globalThis, key);
+		if (existing instanceof Map) {
+			return existing;
+		}
+		const created = new Map<string, TenantHandles>();
+		Reflect.set(globalThis, key, created);
+		return created;
+	});
 }
 
 /**
@@ -143,127 +132,193 @@ export function globalTenantDbStore(name = "databrill.client-kit.tenantDb"): Ten
 const LOCAL_HOSTS: ReadonlySet<string> = new Set(["", "localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"]);
 
 /**
- * Throws unless `postgresUrl` says what it wants from TLS, for any host that is
+ * Fails unless `postgresUrl` says what it wants from TLS, for any host that is
  * not this machine. See this module's docblock for the whole argument.
  *
  * Exported because a consumer that builds its own `createDb()` call — rather
  * than going through {@link tenantDb} — needs the same check, and because a
  * check nobody can reach from outside is a check that gets reimplemented.
  */
-export function assertExplicitSslMode(postgresUrl: string): void {
-	let parsed: URL;
-	try {
-		parsed = new URL(postgresUrl);
-	} catch {
-		// Not a URL at all: a libpq key/value DSN, or a bare socket path. Neither
-		// is something this can read, and `createDb()` passes both through
-		// untouched, so there is nothing here to be sure about either way.
-		return;
-	}
-	const host = parsed.hostname.toLowerCase();
-	if (LOCAL_HOSTS.has(host) || host.endsWith(".localhost")) {
-		return;
-	}
-	if (parsed.searchParams.has("sslmode")) {
-		return;
-	}
-	throw new Error(
-		`The connection string for ${host} has no sslmode. Add sslmode=require for a TLS connection ` +
-			`(what a Supabase pooler URL carries), or sslmode=disable to connect in plaintext on purpose. ` +
-			`It is not defaulted here: without it the driver connects in plaintext, and a database ` +
-			`reached across the internet in plaintext is not something to arrive at by omission.`,
-	);
+export function assertExplicitSslMode(postgresUrl: string): Either.Either<void, Error> {
+	return Either.gen(function* () {
+		let parsed: URL;
+		try {
+			parsed = new URL(postgresUrl);
+		} catch {
+			// Not a URL at all: a libpq key/value DSN, or a bare socket path. Neither
+			// is something this can read, and `createDb()` passes both through
+			// untouched, so there is nothing here to be sure about either way.
+			return;
+		}
+		const host = parsed.hostname.toLowerCase();
+		if (LOCAL_HOSTS.has(host) || host.endsWith(".localhost")) {
+			return;
+		}
+		if (parsed.searchParams.has("sslmode")) {
+			return;
+		}
+		return yield* Either.left(
+			new Error(
+				`The connection string for ${host} has no sslmode. Add sslmode=require for a TLS connection ` +
+					`(what a Supabase pooler URL carries), or sslmode=disable to connect in plaintext on purpose. ` +
+					`It is not defaulted here: without it the driver connects in plaintext, and a database ` +
+					`reached across the internet in plaintext is not something to arrive at by omission.`,
+			),
+		);
+	});
 }
 
 /**
  * The memoisation key for a source.
  *
- * `JSON.stringify` of the tuple rather than a hand-rolled join on a separator:
- * two different `{ postgresUrl, schema }` pairs must never produce one key, and
- * a separator only guarantees that if every component is escaped — which is
- * exactly what JSON encoding already does, in a form that is also readable in a
- * debugger.
+ * Component escaping keeps distinct URL/schema pairs distinct, including tabs.
  */
 function sourceKey(source: TenantSource): string {
-	return JSON.stringify([source.postgresUrl, source.schema]);
+	return makeCompositeKey(source.postgresUrl, source.schema);
 }
 
 /**
  * Open (or reuse) a connection to one tenant database.
  *
  * ```ts
- * const { db, raw, destroy } = tenantDb({ postgresUrl, schema: "w123456789" });
- * const rows = await db.selectFrom("amazon_listing_open").selectAll().execute();
- * await destroy();
+ * // Inside Effect.gen:
+ * const { db, raw, destroy } = yield* tenantDb({ postgresUrl, schema: "w123456789" });
+ * const rows = yield* raw.rows("SELECT * FROM amazon_listing_open");
+ * yield* destroy();
  * ```
  *
  * `db` is read-only over every published table and view, `write` covers the
  * tables customers are meant to write, `raw` runs SQL the typed surface cannot
  * express, and all three share one pool.
  */
-export function tenantDb(source: TenantSource, options: TenantDbOptions = {}): TenantHandles {
-	const store = options.store ?? moduleStore;
-	const key = sourceKey(source);
-	const existing = store.get(key);
-	if (existing !== undefined) {
-		return existing;
-	}
+export function tenantDb(source: TenantSource, options: TenantDbOptions = {}): Effect.Effect<TenantHandles, Error> {
+	const cache = options.cache ?? moduleCache;
+	return withTenantDbCacheLock(
+		cache,
+		Effect.gen(function* () {
+			const key = sourceKey(source);
+			const existing = yield* tryOrOperationError(() => cache.get(key));
+			if (existing !== undefined) {
+				return existing;
+			}
 
-	assertExplicitSslMode(source.postgresUrl);
+			yield* assertExplicitSslMode(source.postgresUrl);
 
-	// `createDb()` interprets the connection string's TLS options.
-	const handle = createDb({ connectionString: source.postgresUrl, schema: source.schema });
-	const handles: TenantHandles = { ...handle, raw: createRawReader(handle.pool) };
-	store.set(key, handles);
-	return handles;
+			// `createDb()` interprets the connection string's TLS options. The cache
+			// lock keeps acquisition from returning a handle while teardown closes it.
+			const handle = yield* createDb({ connectionString: source.postgresUrl, schema: source.schema });
+			const handles: TenantHandles = { ...handle, raw: createRawReader(handle.pool) };
+			const recorded = yield* Effect.exit(
+				tryOrOperationError(() => cache.set(key, handles)),
+			);
+			if (Exit.isFailure(recorded)) {
+				const closed = yield* Effect.exit(handle.destroy());
+				return yield* Effect.failCause(
+					Exit.isFailure(closed) ? Cause.sequential(recorded.cause, closed.cause) : recorded.cause,
+				);
+			}
+			return handles;
+		}),
+	);
+}
+
+// Weak keys keep per-cache coordination from retaining a consumer's discarded cache.
+const cacheLocks = new WeakMap<TenantDbCache, Effect.Semaphore>();
+
+function withTenantDbCacheLock<A>(cache: TenantDbCache, work: Effect.Effect<A, Error>): Effect.Effect<A, Error> {
+	return Effect.suspend(() => {
+		let lock = cacheLocks.get(cache);
+		if (lock === undefined) {
+			lock = Effect.unsafeMakeSemaphore(1);
+			cacheLocks.set(cache, lock);
+		}
+		return lock.withPermits(1)(Effect.uninterruptible(work));
+	});
+}
+
+const pendingCleanup = new WeakMap<TenantDbCache, Map<string, Effect.Effect<void, Error>>>();
+
+/** Concurrent callers observe one attempt; the next call after failure can retry. */
+function shareCleanup(
+	cache: TenantDbCache,
+	key: string,
+	work: Effect.Effect<void, Error>,
+): Effect.Effect<void, Error> {
+	return Effect.uninterruptible(Effect.gen(function* () {
+		let pending = pendingCleanup.get(cache);
+		if (pending === undefined) {
+			pending = new Map();
+			pendingCleanup.set(cache, pending);
+		}
+		const existing = pending.get(key);
+		if (existing !== undefined) {
+			return yield* existing;
+		}
+
+		const attempt = yield* Effect.cached(work);
+		pending.set(key, attempt);
+		return yield* attempt.pipe(Effect.ensuring(Effect.sync(() => pending.delete(key))));
+	}));
 }
 
 /**
  * Destroy and forget the handle for one source, if it is open.
  *
- * Registry-opened callers use this when the role-binding assertion fails: a
- * rejected credential must not leave a dead or unverified handle cached for a
- * later request.
+ * Use this when replacing connection credentials or explicitly reopening a pool.
  */
-export async function destroyTenantDb(
+export function destroyTenantDb(
 	source: TenantSource,
-	store: TenantDbStore = moduleStore,
-): Promise<void> {
-	const key = sourceKey(source);
-	const handles = store.get(key);
-	store.delete(key);
-	if (handles !== undefined) {
-		await handles.destroy();
-	}
+	cache: TenantDbCache = moduleCache,
+): Effect.Effect<void, Error> {
+	return shareCleanup(
+		cache,
+		makeCompositeKey("source", sourceKey(source)),
+		withTenantDbCacheLock(
+			cache,
+			Effect.gen(function* () {
+				const key = sourceKey(source);
+				const handles = yield* tryOrOperationError(() => cache.get(key));
+				if (handles !== undefined) {
+					yield* handles.destroy();
+					yield* tryOrOperationError(() => cache.delete(key));
+				}
+			}),
+		),
+	);
 }
 
 /**
- * Destroy every handle in `store` and empty it.
+ * Destroy every handle in `cache` and empty it.
  *
  * A CLI calls this before it exits; anything longer-lived calls it on shutdown.
- * Handles opened into a different store are not touched — which is the whole
- * reason the store is a parameter.
+ * Handles opened into a different cache are not touched — which is the whole
+ * reason the cache is a parameter.
  */
-export async function destroyAllTenantDbs(store: TenantDbStore = moduleStore): Promise<void> {
-	const open = [...store.values()];
-	store.clear();
-	// Sequentially, not `Promise.all`: teardown of a pool that is already failing
-	// should not lose its error behind another pool's, and there are single
-	// digits of these. Every handle is still destroyed when one throws — the
-	// store was emptied first, so a pool skipped here is one nothing can reach to
-	// destroy afterwards, and a CLI holding it open does not exit.
-	const failures: unknown[] = [];
-	for (const handles of open) {
-		try {
-			await handles.destroy();
-		} catch (cause) {
-			failures.push(cause);
-		}
-	}
-	if (failures.length === 1) {
-		throw failures[0];
-	}
-	if (failures.length > 1) {
-		throw new AggregateError(failures, `${failures.length} tenant pools failed to close`);
-	}
+export function destroyAllTenantDbs(cache: TenantDbCache = moduleCache): Effect.Effect<void, Error> {
+	return shareCleanup(
+		cache,
+		"all",
+		withTenantDbCacheLock(
+			cache,
+			Effect.gen(function* () {
+				const open = yield* tryOrOperationError(() => [...cache.entries()]);
+				let failures: Cause.Cause<Error> = Cause.empty;
+
+				// Attempt every pool. Delete only successfully closed handles, so failed
+				// teardown can be retried without losing the resource that needs closing.
+				for (const [key, handles] of open) {
+					const closed = yield* Effect.exit(Effect.gen(function* () {
+						yield* handles.destroy();
+						yield* tryOrOperationError(() => cache.delete(key));
+					}));
+					if (Exit.isFailure(closed)) {
+						failures = Cause.sequential(failures, closed.cause);
+					}
+				}
+				if (!Cause.isEmpty(failures)) {
+					return yield* Effect.failCause(failures);
+				}
+			}),
+		),
+	);
 }

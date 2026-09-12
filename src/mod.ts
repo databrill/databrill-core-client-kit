@@ -6,16 +6,18 @@
  * specifier is `extern/databrill-core-client-kit/src/mod.ts` — and then:
  *
  * ```ts
- * const { db, raw } = tenantDb({ postgresUrl, schema: "w123456789" });
- * const listings = await db.selectFrom("amazon_listing_open").select(["sku", "asin"]).execute();
- * await destroyAllTenantDbs();
+ * const program = Effect.gen(function* () {
+ * 	const cache = yield* acquireTenantDbCache();
+ * 	const { raw } = yield* tenantDb({ postgresUrl, schema: "w123456789" }, { cache });
+ * 	return yield* raw.rows("SELECT sku, asin FROM amazon_listing_open");
+ * }).pipe(Effect.scoped);
  * ```
  *
  * ## What is deliberately NOT re-exported here
  *
  * `./lib/workspaces.ts`. This module is the layer with zero knowledge of config
  * files: everything reachable from here takes explicit connection information,
- * and its whole dependency footprint is `@databrill/core-pg-kysely`.
+ * and its dependencies are `@databrill/core-pg-kysely` and Effect.
  * `./lib/workspaces.ts` is the optional layer that resolves a wsid through
  * `databrill.config.json`; a consumer that wants the registry convention imports
  * that file directly, and a consumer that does not, does not pay for it.
@@ -28,23 +30,21 @@
  * CONSUMER's import map, not this package's `deno.json`, so every bare specifier
  * under `src/` is a line the consumer has to carry:
  *
- * - `@databrill/core-pg-kysely` — everything here
+ * - `@databrill/core-pg-kysely` — database handles
+ * - `effect` — Effect 3.21.2
  *
- * That is the whole list, and it is one line because this package uses ONE
- * Postgres driver. `@databrill/core-pg-kysely` opens the pool; `./lib/rawSql.ts`
+ * These imports use one Effect version and one Postgres driver. `@databrill/core-pg-kysely` opens the pool; `./lib/rawSql.ts`
  * runs the statements the typed surface cannot express, on that same pool,
  * through `$1` placeholders. The boundary scan in
  * `../tests/unit/boundaryScan.test.ts` derives allowed dependencies from the
  * import map and prevents an undeclared driver from entering `src/`.
  *
- * `cmd-ts` is declared in this package's `deno.json` but is NOT on that list:
- * nothing reachable from this file imports it. It is used only by the two
- * commands under `./cli/`, and a command is run as
- * `deno run -A extern/…/src/cli/query.ts`, where the entry point is inside this
- * package — so Deno discovers THIS package's `deno.json` and resolves against
- * it. A consumer pays for `cmd-ts` only if it imports a file under `./cli/`
- * from its own code, which is what the library halves re-exported below exist to
- * make unnecessary.
+ * `@effect/cli`, `@effect/platform` and `@effect/platform-node` are CLI-only
+ * dependencies declared in this package's `deno.json`. Nothing reachable from
+ * this file imports them. A command run as
+ * `deno run -A extern/…/src/cli/query.ts` uses this package's manifest. A consumer
+ * importing a file under `./cli/` directly must declare those dependencies in
+ * its own import map; the library exports below do not require them.
  *
  * @module
  */
@@ -53,12 +53,12 @@ export {
 	assertExplicitSslMode,
 	destroyAllTenantDbs,
 	destroyTenantDb,
-	globalTenantDbStore,
-	moduleTenantDbStore,
-	newTenantDbStore,
+	globalTenantDbCache,
+	moduleTenantDbCache,
+	newTenantDbCache,
 	tenantDb,
 } from "./lib/tenantDb.ts";
-export type { TenantDbOptions, TenantDbStore, TenantHandles, TenantSource } from "./lib/tenantDb.ts";
+export type { TenantDbCache, TenantDbOptions, TenantHandles, TenantSource } from "./lib/tenantDb.ts";
 
 export { createRawReader, tbl } from "./lib/rawSql.ts";
 export type { RawReader } from "./lib/rawSql.ts";
@@ -87,7 +87,7 @@ export type {
 	SeedCatalogResult,
 } from "./lib/seedCatalog.ts";
 
-export { formatResult, formatRows, QUERY_FORMATS, runQuery, runStatement } from "./lib/query.ts";
+export { formatResult, formatRows, QUERY_FORMATS } from "./lib/query.ts";
 export type { QueryFormat } from "./lib/query.ts";
 
 import type { TenantDb } from "@databrill/core-pg-kysely";
@@ -102,3 +102,5 @@ export type ReadDb = TenantDb["db"];
 
 /** The writable Kysely surface: the tables customers are intended to write. */
 export type WriteDb = TenantDb["write"];
+
+export { acquireTenantDbCache } from "./lib/acquireTenantDbCache.ts";

@@ -28,8 +28,8 @@
  * Consequences, both enforced by those packages' boundary scans, which read
  * THROUGH the symlinks:
  *
- *   - It must import nothing beyond `node:` builtins and its sibling
- *     `./amazonConstants.ts`. A `@databrill/*` or third-party import here
+ *   - It imports `effect`, `node:` builtins and its sibling
+ *     `./amazonConstants.ts`. Every third-party import here
  *     becomes a line every consumer of those packages must carry, and
  *     `client-kit` is consumed as a git submodule whose files resolve against
  *     the CONSUMER's import map.
@@ -38,7 +38,8 @@
  *     alone breaks the canonical copy, not just the links.
  */
 
-import { readFileSync } from "node:fs";
+import { Effect, Either } from "effect";
+import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { countryCodeToMarketplaceInfo } from "./amazonConstants.ts";
 
@@ -118,39 +119,49 @@ function canonCountry(code: string): string {
 }
 
 /** Replace every `${VAR}` with `process.env.VAR`, collecting any that are unset. */
-function expandEnv(raw: string): string {
-	const missing = new Set<string>();
-	const out = raw.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, name: string) => {
-		const val = process.env[name];
-		if (val === undefined || val === "") {
-			missing.add(name);
-			return "";
+function expandEnv(raw: string): Either.Either<string, Error> {
+	return Either.gen(function* () {
+		const missing = new Set<string>();
+		const out = yield* Either.try({
+			try: () =>
+				raw.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, name: string) => {
+					const val = process.env[name];
+					if (val === undefined || val === "") {
+						missing.add(name);
+						return "";
+					}
+					return val;
+				}),
+			catch: (cause) => new Error("DATABRILL_CONFIG: cannot read environment", { cause }),
+		});
+		if (missing.size > 0) {
+			return yield* Either.left(
+				new Error(
+					`DATABRILL_CONFIG references undefined environment variable(s): ${[...missing].join(", ")}`,
+				),
+			);
 		}
-		return val;
+		return out;
 	});
-	if (missing.size > 0) {
-		throw new Error(
-			`DATABRILL_CONFIG references undefined environment variable(s): ${[...missing].join(", ")}`,
-		);
-	}
-	return out;
 }
 
-function parseFeatures(raw: unknown, fail: (message: string) => never): WorkspaceFeatures {
-	if (raw === undefined) {
-		return {};
-	}
-	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-		fail('"features" must be an object of boolean flags');
-	}
-	const features: Record<string, boolean> = {};
-	for (const [name, enabled] of Object.entries(raw)) {
-		if (typeof enabled !== "boolean") {
-			fail(`feature "${name}" must be boolean`);
+function parseFeatures(raw: unknown, source: string): Either.Either<WorkspaceFeatures, Error> {
+	return Either.gen(function* () {
+		if (raw === undefined) {
+			return {};
 		}
-		features[name] = enabled;
-	}
-	return features;
+		if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+			return yield* invalidConfig(source, '"features" must be an object of boolean flags');
+		}
+		const features: Record<string, boolean> = {};
+		for (const [name, enabled] of Object.entries(raw)) {
+			if (typeof enabled !== "boolean") {
+				return yield* invalidConfig(source, `feature "${name}" must be boolean`);
+			}
+			features[name] = enabled;
+		}
+		return features;
+	});
 }
 
 export function workspaceHasFeature(workspace: DirectoryWorkspace, feature: string): boolean {
@@ -158,111 +169,136 @@ export function workspaceHasFeature(workspace: DirectoryWorkspace, feature: stri
 }
 
 /**
- * Load the workspace config from `DATABRILL_CONFIG`, or return `null` when the
- * variable is unset. Frontends that require routing must reject that null.
- * Throws on a malformed file so a bad config fails at startup rather than
+ * Load the workspace config from an explicit path or `DATABRILL_CONFIG`, returning
+ * `null` when neither is set. Frontends that require routing must reject that null.
+ * Fails on a malformed file so a bad config fails at startup rather than
  * mid-request.
  */
-export function loadConfig(): Config | null {
-	const path = process.env["DATABRILL_CONFIG"];
-	if (!path) return null;
+export function loadConfig(configPath?: string): Effect.Effect<Config | null, Error> {
+	return Effect.gen(function* () {
+		const path = yield* Effect.try({
+			try: () => configPath ?? process.env["DATABRILL_CONFIG"],
+			catch: (cause) => new Error("DATABRILL_CONFIG: cannot read environment", { cause }),
+		});
+		if (!path) {
+			return null;
+		}
 
-	const abs = isAbsolute(path) ? path : resolvePath(process.cwd(), path);
-	let text: string;
-	try {
-		text = readFileSync(abs, "utf8");
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`DATABRILL_CONFIG: cannot read ${abs}: ${message}`);
-	}
+		const abs = yield* Effect.try({
+			try: () => isAbsolute(path) ? path : resolvePath(process.cwd(), path),
+			catch: (cause) => new Error("DATABRILL_CONFIG: cannot resolve path", { cause }),
+		});
+		const text = yield* Effect.tryPromise({
+			try: (signal) => readFile(abs, { encoding: "utf8", signal }),
+			catch: (cause) => new Error(`DATABRILL_CONFIG: cannot read ${abs}`, { cause }),
+		});
 
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(expandEnv(text));
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`DATABRILL_CONFIG: invalid JSON in ${abs}: ${message}`);
-	}
+		const expanded = yield* expandEnv(text);
+		const parsed: unknown = yield* Effect.try({
+			try: () => JSON.parse(expanded),
+			catch: (cause) => new Error(`DATABRILL_CONFIG: invalid JSON in ${abs}`, { cause }),
+		});
 
-	return build(parsed, abs);
+		return yield* build(parsed, abs);
+	});
 }
 
-function build(parsed: unknown, source: string): Config {
-	const fail = (msg: string): never => {
-		throw new Error(`DATABRILL_CONFIG (${source}): ${msg}`);
-	};
+function invalidConfig(source: string, message: string): Either.Either<never, Error> {
+	return Either.left(new Error(`DATABRILL_CONFIG (${source}): ${message}`));
+}
 
-	if (typeof parsed !== "object" || parsed === null) fail("root must be an object");
-	const rawWorkspaces = (parsed as Record<string, unknown>)["workspaces"];
-	if (typeof rawWorkspaces !== "object" || rawWorkspaces === null) {
-		fail('missing "workspaces" object');
-	}
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
-	const workspaces: Record<string, Workspace> = {};
-	const byCountry = new Map<string, string[]>();
-	const byMerchant = new Map<string, string>();
-
-	for (const [wsid, rawWs] of Object.entries(rawWorkspaces as Record<string, unknown>)) {
-		if (typeof rawWs !== "object" || rawWs === null) fail(`workspace "${wsid}" must be an object`);
-		const ws = rawWs as Record<string, unknown>;
-
-		const db = ws["database"] as Record<string, unknown> | undefined;
-		const postgresUrl = db?.["postgresUrl"];
-		if (typeof postgresUrl !== "string" || !postgresUrl) {
-			fail(`workspace "${wsid}" missing database.postgresUrl`);
+function build(parsed: unknown, source: string): Either.Either<Config, Error> {
+	return Either.gen(function* () {
+		if (!isRecord(parsed)) {
+			return yield* invalidConfig(source, "root must be an object");
 		}
-		const schema = typeof db?.["schema"] === "string" && db["schema"] ? db["schema"] : `w${wsid}`;
-
-		const rawMerchants = ws["merchants"];
-		if (typeof rawMerchants !== "object" || rawMerchants === null) {
-			fail(`workspace "${wsid}" missing "merchants" object`);
+		const rawWorkspaces = parsed["workspaces"];
+		if (!isRecord(rawWorkspaces)) {
+			return yield* invalidConfig(source, 'missing "workspaces" object');
 		}
 
-		const merchants: Record<string, Merchant> = {};
-		for (const [merchantId, rawM] of Object.entries(rawMerchants as Record<string, unknown>)) {
-			if (typeof rawM !== "object" || rawM === null) fail(`merchant "${merchantId}" must be an object`);
-			const m = rawM as Record<string, unknown>;
-			const countriesRaw = m["countries"];
-			if (!Array.isArray(countriesRaw) || countriesRaw.length === 0) {
-				fail(`merchant "${merchantId}" needs a non-empty "countries" array`);
+		const workspaces: Record<string, Workspace> = {};
+		const byCountry = new Map<string, string[]>();
+		const byMerchant = new Map<string, string>();
+
+		for (const [wsid, ws] of Object.entries(rawWorkspaces)) {
+			if (!isRecord(ws)) {
+				return yield* invalidConfig(source, `workspace "${wsid}" must be an object`);
 			}
-			const countries = (countriesRaw as unknown[]).map((c) => {
-				if (typeof c !== "string") fail(`merchant "${merchantId}" has a non-string country`);
-				const canon = canonCountry(c as string);
-				if (!(canon in countryCodeToMarketplaceInfo)) {
-					fail(`merchant "${merchantId}" has unknown country "${c}"`);
+
+			const db = isRecord(ws["database"]) ? ws["database"] : undefined;
+			const postgresUrl = db?.["postgresUrl"];
+			if (typeof postgresUrl !== "string" || !postgresUrl) {
+				return yield* invalidConfig(source, `workspace "${wsid}" missing database.postgresUrl`);
+			}
+			const schema = typeof db?.["schema"] === "string" && db["schema"] ? db["schema"] : `w${wsid}`;
+
+			const rawMerchants = ws["merchants"];
+			if (!isRecord(rawMerchants)) {
+				return yield* invalidConfig(source, `workspace "${wsid}" missing "merchants" object`);
+			}
+
+			const merchants: Record<string, Merchant> = {};
+			for (const [merchantId, m] of Object.entries(rawMerchants)) {
+				if (!isRecord(m)) {
+					return yield* invalidConfig(source, `merchant "${merchantId}" must be an object`);
 				}
-				return canon;
-			});
+				const countriesRaw = m["countries"];
+				if (!Array.isArray(countriesRaw) || countriesRaw.length === 0) {
+					return yield* invalidConfig(source, `merchant "${merchantId}" needs a non-empty "countries" array`);
+				}
+				const countries: string[] = [];
+				for (const c of countriesRaw) {
+					if (typeof c !== "string") {
+						return yield* invalidConfig(source, `merchant "${merchantId}" has a non-string country`);
+					}
+					const canon = canonCountry(c);
+					if (!(canon in countryCodeToMarketplaceInfo)) {
+						return yield* invalidConfig(source, `merchant "${merchantId}" has unknown country "${c}"`);
+					}
+					countries.push(canon);
+				}
 
-			if (byMerchant.has(merchantId)) {
-				fail(`merchantId "${merchantId}" appears in workspaces ${byMerchant.get(merchantId)} and ${wsid}`);
-			}
-			byMerchant.set(merchantId, wsid);
-			for (const c of countries) {
-				const list = byCountry.get(c) ?? [];
-				if (!list.includes(wsid)) list.push(wsid);
-				byCountry.set(c, list);
+				if (byMerchant.has(merchantId)) {
+					return yield* invalidConfig(
+						source,
+						`merchantId "${merchantId}" appears in workspaces ${byMerchant.get(merchantId)} and ${wsid}`,
+					);
+				}
+				byMerchant.set(merchantId, wsid);
+				for (const c of countries) {
+					const list = byCountry.get(c) ?? [];
+					if (!list.includes(wsid)) {
+						list.push(wsid);
+					}
+					byCountry.set(c, list);
+				}
+
+				merchants[merchantId] = {
+					name: typeof m["name"] === "string" ? m["name"] : undefined,
+					countries,
+				};
 			}
 
-			merchants[merchantId] = {
-				name: typeof m["name"] === "string" ? m["name"] : undefined,
-				countries,
+			workspaces[wsid] = {
+				wsid,
+				label: typeof ws["label"] === "string" ? ws["label"] : undefined,
+				database: { postgresUrl, schema },
+				merchants,
+				features: yield* parseFeatures(ws["features"], source),
 			};
 		}
 
-		workspaces[wsid] = {
-			wsid,
-			label: typeof ws["label"] === "string" ? ws["label"] : undefined,
-			database: { postgresUrl: postgresUrl as string, schema },
-			merchants,
-			features: parseFeatures(ws["features"], fail),
-		};
-	}
+		if (Object.keys(workspaces).length === 0) {
+			return yield* invalidConfig(source, '"workspaces" is empty');
+		}
 
-	if (Object.keys(workspaces).length === 0) fail('"workspaces" is empty');
-
-	return { workspaces, byCountry, byMerchant };
+		return { workspaces, byCountry, byMerchant };
+	});
 }
 
 /**
@@ -278,18 +314,20 @@ function build(parsed: unknown, source: string): Config {
 export function resolveWorkspace<W extends DirectoryWorkspace>(
 	config: { readonly workspaces: Readonly<Record<string, W>> },
 	args: Record<string, unknown>,
-): W {
-	const ids = Object.keys(config.workspaces);
+): Either.Either<W, Error> {
+	return Either.gen(function* () {
+		const ids = Object.keys(config.workspaces);
 
-	const wsidArg = typeof args["wsid"] === "string" ? args["wsid"].trim() : "";
-	if (wsidArg === "") {
-		throw new Error(`Pass "wsid" explicitly (one of: ${ids.join(", ")}).`);
-	}
-	const workspace = config.workspaces[wsidArg];
-	if (workspace === undefined) {
-		throw new Error(`Unknown wsid "${wsidArg}". Configured workspaces: ${ids.join(", ")}`);
-	}
-	return workspace;
+		const wsidArg = typeof args["wsid"] === "string" ? args["wsid"].trim() : "";
+		if (wsidArg === "") {
+			return yield* Either.left(new Error(`Pass "wsid" explicitly (one of: ${ids.join(", ")}).`));
+		}
+		const workspace = config.workspaces[wsidArg];
+		if (workspace === undefined) {
+			return yield* Either.left(new Error(`Unknown wsid "${wsidArg}". Configured workspaces: ${ids.join(", ")}`));
+		}
+		return workspace;
+	});
 }
 
 /** A JSON-friendly summary of the configured workspaces, for the listWorkspaces tool. */

@@ -1,63 +1,18 @@
 /**
- * Running one ad-hoc statement against a tenant database and formatting what
- * comes back.
+ * Formatting rows and complete driver results from an ad-hoc SQL statement.
  *
- * This is the LIBRARY half of the `query` command: it takes a statement string
- * and options that are already resolved, and never reads a file, never looks at
- * `Deno.args` and never prints. `./cli/query.ts` is the command that does those
- * things.
- *
- * Tenant login roles carry `ALTER ROLE ... SET search_path = "w{wsid}"`,
- * so unqualified table names resolve in the workspace schema, including through
- * a transaction-mode pooler. Statements are sent unchanged. If a name resolves
- * in the wrong schema, correct the role's provisioning. Use `tbl(schema, name)`
- * from `./rawSql.ts` when a statement needs an explicit schema.
+ * These formatters take query results and a selected output format. They never
+ * read a file, inspect `Deno.args`, or print. `../cli/query.ts` handles those
+ * command concerns and executes statements through `RawReader` in `./rawSql.ts`.
  */
 
 import type { TenantPoolResult } from "@databrill/core-pg-kysely";
-import type { RawReader } from "./rawSql.ts";
 
 /** How {@link formatRows} renders a result. */
 export type QueryFormat = "table" | "json";
 
 /** The two values {@link QueryFormat} may take, for a CLI validating a flag. */
 export const QUERY_FORMATS: readonly QueryFormat[] = ["table", "json"];
-
-/**
- * Run one statement and return its rows.
- *
- * Reads and writes both go through here — the statement is whatever the caller
- * wrote — and it is sent unchanged. Parameters are bound by the driver and
- * never interpolated into the text, and nothing is put into the text here at
- * all.
- */
-export function runQuery(
-	raw: RawReader,
-	statement: string,
-	values: readonly unknown[] = [],
-): Promise<readonly Record<string, unknown>[]> {
-	return raw.rows(statement, values);
-}
-
-/**
- * The same statement, run the same way, but returning the WHOLE driver result
- * rather than only its rows.
- *
- * {@link runQuery} is the right shape for a caller that wrote a `SELECT` and
- * wants the rows. It is the wrong shape for a caller that does not know which it
- * has: an `UPDATE` with no `RETURNING` produces no rows at all, so a caller
- * looking only at rows cannot tell a statement that changed five thousand of
- * them from one that matched none. `command` and `rowCount` are what carry that,
- * and they are why the `query` command runs through here — see
- * {@link formatResult}.
- */
-export function runStatement(
-	raw: RawReader,
-	statement: string,
-	values: readonly unknown[] = [],
-): Promise<TenantPoolResult> {
-	return raw.result(statement, values);
-}
 
 /** A value as one display cell: `null` shown as such, everything else via JSON or its own text. */
 function cell(value: unknown): string {

@@ -13,6 +13,7 @@
  */
 
 import type { TenantPool, TenantPoolResult } from "@databrill/core-pg-kysely";
+import { Effect, Either } from "effect";
 
 /**
  * A plain Postgres identifier: what can appear inside double quotes without
@@ -22,13 +23,16 @@ import type { TenantPool, TenantPoolResult } from "@databrill/core-pg-kysely";
  */
 const PLAIN_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$]*$/;
 
-function assertPlainIdentifier(value: string, what: string): void {
+function assertPlainIdentifier(value: string, what: string): Either.Either<void, Error> {
 	if (!PLAIN_IDENTIFIER.test(value)) {
-		throw new Error(
-			`Invalid ${what} name ${JSON.stringify(value)}: expected a plain Postgres identifier ` +
-				`such as "public" or "w123456789".`,
+		return Either.left(
+			new Error(
+				`Invalid ${what} name ${JSON.stringify(value)}: expected a plain Postgres identifier ` +
+					`such as "public" or "w123456789".`,
+			),
 		);
 	}
+	return Either.void;
 }
 
 /**
@@ -43,22 +47,24 @@ function assertPlainIdentifier(value: string, what: string): void {
  * validated rather than escaped: an identifier that needs an escape is a mistake
  * here, not a case to support.
  */
-export function tbl(schema: string, name: string): string {
-	assertPlainIdentifier(schema, "schema");
-	assertPlainIdentifier(name, "table");
-	return `"${schema}"."${name}"`;
+export function tbl(schema: string, name: string): Either.Either<string, Error> {
+	return Either.gen(function* () {
+		yield* assertPlainIdentifier(schema, "schema");
+		yield* assertPlainIdentifier(name, "table");
+		return `"${schema}"."${name}"`;
+	});
 }
 
 /** Read-only raw access to one tenant database. */
 export interface RawReader {
 	/** Every row, as plain objects keyed by column name. */
-	rows(text: string, values?: readonly unknown[]): Promise<readonly Record<string, unknown>[]>;
+	rows(text: string, values?: readonly unknown[]): Effect.Effect<readonly Record<string, unknown>[], Error>;
 
 	/** The first row, or `null` when the statement returned none. */
-	first(text: string, values?: readonly unknown[]): Promise<Record<string, unknown> | null>;
+	first(text: string, values?: readonly unknown[]): Effect.Effect<Record<string, unknown> | null, Error>;
 
 	/** The whole driver result, for callers that need `command` or `rowCount`. */
-	result(text: string, values?: readonly unknown[]): Promise<TenantPoolResult>;
+	result(text: string, values?: readonly unknown[]): Effect.Effect<TenantPoolResult, Error>;
 }
 
 /**
@@ -70,17 +76,15 @@ export interface RawReader {
  */
 export function createRawReader(pool: TenantPool): RawReader {
 	return {
-		async rows(text: string, values?: readonly unknown[]): Promise<readonly Record<string, unknown>[]> {
-			const result = await pool.query(text, values);
-			return result.rows;
+		rows(text: string, values?: readonly unknown[]): Effect.Effect<readonly Record<string, unknown>[], Error> {
+			return Effect.map(pool.query(text, values), (result) => result.rows);
 		},
 
-		async first(text: string, values?: readonly unknown[]): Promise<Record<string, unknown> | null> {
-			const result = await pool.query(text, values);
-			return result.rows[0] ?? null;
+		first(text: string, values?: readonly unknown[]): Effect.Effect<Record<string, unknown> | null, Error> {
+			return Effect.map(pool.query(text, values), (result) => result.rows[0] ?? null);
 		},
 
-		result(text: string, values?: readonly unknown[]): Promise<TenantPoolResult> {
+		result(text: string, values?: readonly unknown[]): Effect.Effect<TenantPoolResult, Error> {
 			return pool.query(text, values);
 		},
 	};

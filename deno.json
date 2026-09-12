@@ -6,8 +6,11 @@
 		]
 	},
 	"imports": {
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.7",
-		"cmd-ts": "npm:cmd-ts@^0.15.0"
+		"effect": "npm:effect@3.21.2",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.12",
+		"@effect/cli": "npm:@effect/cli@0.75.0",
+		"@effect/platform": "npm:@effect/platform@0.96.1",
+		"@effect/platform-node": "npm:@effect/platform-node@0.106.0"
 	},
 	"tasks": {
 		"fmt": "deno fmt",
