@@ -37,7 +37,7 @@ this package's own `deno.json`.** So every bare specifier under `src/` is a line
 	"imports": {
 		"effect": "npm:effect@3.21.2",
 		// Needed by everything in this package.
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.13",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.14",
 	},
 }
 ```

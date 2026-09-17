@@ -7,7 +7,7 @@
 	},
 	"imports": {
 		"effect": "npm:effect@3.21.2",
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.13",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.14",
 		"@effect/cli": "npm:@effect/cli@0.75.0",
 		"@effect/platform": "npm:@effect/platform@0.96.1",
 		"@effect/platform-node": "npm:@effect/platform-node@0.106.0"
