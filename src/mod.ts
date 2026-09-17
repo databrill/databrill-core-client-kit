@@ -19,8 +19,8 @@
  * files: everything reachable from here takes explicit connection information,
  * and its dependencies are `@databrill/core-pg-kysely` and Effect.
  * `./lib/workspaces.ts` is the optional layer that resolves a wsid through
- * `databrill.config.json`; a consumer that wants the registry convention imports
- * that file directly, and a consumer that does not, does not pay for it.
+ * `databrill.config.json`; a consumer that wants that lookup imports that file
+ * directly, and a consumer that does not, does not pay for it.
  * Re-exporting it from here would collapse that split in the one way nothing
  * would report — by import graph, silently, for every consumer.
  *

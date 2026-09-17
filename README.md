@@ -1,8 +1,8 @@
 # databrill-core-client-kit
 
 The database-access layer and the two commands that every Databrill client repo would otherwise paste into its
-own `src/db/` and `scripts/`: a tenant connection factory, a raw-SQL reader, an optional workspace registry over
-`databrill.config.json`, and the `seedCatalog` and `query` commands.
+own `src/db/` and `scripts/`: a tenant connection factory, a raw-SQL reader, an optional wsid lookup in
+`databrill.config.json` (`src/lib/workspaces.ts`), and the `seedCatalog` and `query` commands.
 
 One implementation, consumed by every client repo, instead of a copy per repo that drifts apart on correctness.
 
@@ -37,7 +37,7 @@ this package's own `deno.json`.** So every bare specifier under `src/` is a line
 	"imports": {
 		"effect": "npm:effect@3.21.2",
 		// Needed by everything in this package.
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.12",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.13",
 	},
 }
 ```
@@ -89,10 +89,10 @@ with the default format, and a mistyped `--wsid` must never silently select anot
 | `--format table\|json` | `table` (default) for a terminal, `json` for a pipe.                                             |
 | `--root <dir>`         | Where `databrill.config.json` is looked for. Defaults to the current directory.                  |
 
-**There is no default wsid.** Every invocation must pass `--wsid`, even when the registry declares one
-workspace. The registry maps that explicit id to a server-side credential; discovery never selects a target.
-The registry entry is taken at its word: the command opens the pool and runs the statement. Pointing a wsid
-at the wrong connection string is a configuration mistake, and it shows up as recognisably wrong data rather
+**There is no default wsid.** Every invocation must pass `--wsid`, even when `databrill.config.json` declares one
+workspace. `databrill.config.json` maps that explicit id to a connection string; discovery never selects a target.
+The `databrill.config.json` entry is taken at its word: the command opens the pool and runs the statement. Pointing
+a wsid at the wrong connection string is a configuration mistake, and it shows up as recognisably wrong data rather
 than as an error.
 
 **Table names need no schema prefix.** Your workspace's login role is
@@ -304,6 +304,11 @@ console.log(formatRows(await Effect.runPromise(program), "table"));
 
 `db` is read-only over every published table and view, `write` covers the tables customers are meant to write,
 `raw` runs SQL the typed surface cannot express, and all three share one pool.
+
+`destroyAllTenantDbs(cache)` destroys every handle in `cache` and empties it, for shutdown.
+`destroyTenantDb(source, cache)` destroys and forgets only the handle opened with the same
+`{ postgresUrl, schema }` as `source` and leaves the rest of the cache open, for a process that is finished with
+one workspace. Both use the module cache when `cache` is left out.
 
 Database acquisition, raw queries and teardown return lazy `Effect.Effect<A, Error>` programs.
 Compose with `yield*` and execute at the application boundary. Synchronous validation (`tbl` and

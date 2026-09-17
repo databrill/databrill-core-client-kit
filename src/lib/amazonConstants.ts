@@ -76,8 +76,8 @@ export const regionInfoMap: { readonly [region in AmazonRegion]: AmazonRegionInf
  * Two canonical marketplace lists exist and are intentionally distinct: this array is the
  * platform's supported set, while `amazonMarketplaceApiInfos` in
  * `libs/amazon/src/amazonConstants_marketplaces.ts` is a dump of observed seller
- * participation. They may legitimately differ in the supported-but-unobserved direction (JP
- * is here and not there, because no customer has yet participated in Amazon.co.jp); the
+ * participation. They may legitimately differ in the supported-but-unobserved direction (a
+ * marketplace supported here that no connected seller participates in yet); the
  * reverse direction is a defect, guarded by the test in
  * `libs/amazon/src/amazonConstants_marketplaces.test.ts`. That guard has to live under `libs/`
  * because it reads `amazonMarketplaceApiInfos`, and `shared/` must never import from `libs/`:
@@ -250,8 +250,8 @@ export const marketplaceInfos: readonly AmazonMarketplaceInfo[] = [
 		// country's IANA zone, not an Amazon-stated value.
 		timeZone: "Asia/Riyadh",
 		defaultCurrencyCode: "SAR",
-		// Verified against production: this is what Amazon's getMarketplaceParticipations
-		// actually returns for the SA marketplace. Do not "correct" this to ar_SA.
+		// This is what Amazon's getMarketplaceParticipations actually returns for the SA
+		// marketplace. Do not "correct" this to ar_SA.
 		defaultLanguageCode: "en_AE",
 		domainName: "www.amazon.sa",
 		region: "EU",

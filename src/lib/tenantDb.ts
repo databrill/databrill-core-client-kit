@@ -1,9 +1,9 @@
 /**
  * Opening a tenant database, and reusing the pool once it is open.
  *
- * This is the registry-independent core of the kit: it takes explicit connection
- * information — a Postgres URL and a schema — and knows nothing about
- * `databrill.config.json`, wsids or any other registry convention. The layer
+ * This is the config-file-independent core of the kit: it takes explicit
+ * connection information — a Postgres URL and a schema — and knows nothing about
+ * `databrill.config.json`, wsids or any other config-file format. The layer
  * that resolves a wsid to a `{ postgresUrl, schema }` is `./workspaces.ts`, and
  * it is optional on purpose: a consumer that already knows its connection string
  * should not have to adopt a config-file format to open a connection.
@@ -264,7 +264,11 @@ function shareCleanup(
 /**
  * Destroy and forget the handle for one source, if it is open.
  *
- * Use this when replacing connection credentials or explicitly reopening a pool.
+ * Use this to close one workspace's handle while the rest of the cache stays
+ * open: a long-running process that is finished with one workspace, or a caller
+ * that has learned its connection string is wrong. `destroyAllTenantDbs` is the
+ * shutdown path. If closing fails, the handle stays cached and the error is
+ * returned, so the call can be retried.
  */
 export function destroyTenantDb(
 	source: TenantSource,

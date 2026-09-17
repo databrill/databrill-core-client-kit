@@ -1,12 +1,12 @@
 /**
- * The OPTIONAL workspace-registry layer: resolving a wsid to a database through
+ * The OPTIONAL layer that resolves a wsid to a database through
  * `databrill.config.json`.
  *
  * `./mod.ts` and everything it re-exports take explicit connection information
  * and know nothing about config files. This module is the other half, for repos
- * that want the registry convention, and it is imported directly rather than
- * through `mod.ts` so that a consumer which does not want it does not get it in
- * its import graph.
+ * that keep their wsids in `databrill.config.json`, and it is imported directly
+ * rather than through `mod.ts` so that a consumer which does not want it does
+ * not get it in its import graph.
  *
  * ## Config discovery does not depend on where this file lives
  *

@@ -11,9 +11,9 @@
  * one here would put a specific customer's workspace id inside a package every
  * customer runs.
  *
- * Every invocation names its workspace with `--wsid`. The registry is a
- * server-side map from that explicit id to a credential; the number of entries
- * in it never changes the request contract.
+ * Every invocation names its workspace with `--wsid`. `databrill.config.json`
+ * maps that explicit id to a connection string; the number of entries in it
+ * never changes the request contract.
  */
 
 import { Effect, Either } from "effect";
@@ -39,7 +39,7 @@ export interface WorkspaceTarget {
 }
 
 /**
- * Resolve a wsid through the registry and open its database.
+ * Resolve a wsid through `databrill.config.json` and open its database.
  *
  * This is the two-line join `../lib/workspaces.ts` deliberately does not provide as
  * a `tenantDbForWsid()` — done here, in the layer that already depends on both
