@@ -370,6 +370,22 @@ export const countryCodeToMarketplaceInfo: {
 	);
 
 /**
+ * A country code as the platform spells it: trimmed, upper case, and with the
+ * Ads API's `"UK"` folded into the canonical `"GB"`.
+ *
+ * {@link countryCodeToMarketplaceInfo} keeps a `"UK"` entry so that a lookup by
+ * the Ads-API spelling resolves. A user-supplied `"UK"` therefore passes that
+ * lookup and then matches nothing keyed on `"GB"`: VAT attributes, rank tables,
+ * store lists. Canonicalise a code of unknown provenance with this before
+ * comparing or storing it. Any other code is only trimmed and upper-cased; it is
+ * not checked against the marketplace list.
+ */
+export function canonicalCountryCode(code: string): string {
+	const upper = code.trim().toUpperCase();
+	return upper === "UK" ? "GB" : upper;
+}
+
+/**
  * Marketplace id -> its info. The UK entry is an alias of GB on the same marketplace id and is
  * filtered out, as it is for the two maps below, so this yields the platform-canonical "GB"
  * (see `libs/amazon/src/adapi/adapiCountryCode.ts` — "UK" belongs to the Ads API boundary
@@ -398,8 +414,9 @@ export const salesChannelToMarketplaceId: { readonly [salesChannel: string]: str
 
 /**
  * Maps currency codes to marketplace IDs, but only for currencies unique to one marketplace.
- * Used as a fallback when sales channel is not recognized (e.g., "Non-Amazon").
  * Currencies like EUR are excluded because they're used in multiple marketplaces.
+ * Do not use it to place an order line whose sales channel names no marketplace: a currency says
+ * which money a line is in, not where it was sold, and a Non-Amazon line usually has none.
  */
 export const currencyToMarketplaceId: { readonly [currency: string]: string } = (() => {
 	// Group marketplaces by currency

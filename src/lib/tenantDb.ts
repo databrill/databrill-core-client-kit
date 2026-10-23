@@ -37,6 +37,36 @@
  * `public`, so the statement fails rather than reading the wrong rows. It is not
  * a query transformation problem; correct the role's provisioning.
  *
+ * ## Supabase's transaction pooler is the default
+ *
+ * Tenant connection strings usually name Supabase's SESSION pooler
+ * (`aws-*-*.pooler.supabase.com:5432`). There, every open client connection
+ * pins a server connection for as long as it stays open, so an idle pool holds
+ * its share of the login role's connection limit, and the limit is shared by
+ * every process that logs in as that role. Port 6543 on the same host is the
+ * TRANSACTION pooler, which holds a server connection only while a transaction
+ * runs.
+ *
+ * {@link tenantDb} therefore opens a URL of the session-pooler shape on port
+ * 6543 ({@link rewriteSupabasePoolerUri}); any other URL, including a direct
+ * host, a local one, a self-hosted pooler or one already on 6543, is opened as
+ * given. Nothing this package does needs a session: the schema comes from the
+ * role, as above, Kysely's `PostgresDialect` never names a prepared statement,
+ * and `seedCatalog`'s single transaction keeps one backend for its duration.
+ *
+ * Code that does need a session passes `pooler: "as-given"`; see
+ * {@link TenantDbOptions.pooler} for what counts. It is a per-call option rather
+ * than a setting in the config file because it is a property of what the
+ * calling code does, not of where it is deployed.
+ *
+ * ## Pool size
+ *
+ * Every Databrill tenant login role is provisioned with a connection limit of
+ * 10, shared by every process connecting as it: a dev server, a CLI run, the
+ * deployed app. `pg`'s default pool of 10 lets one process take all of them, and
+ * the next one fails with `too many connections for role`. The default here is
+ * {@link DEFAULT_TENANT_POOL_MAX}; {@link TenantDbOptions.pool} overrides it.
+ *
  * ## TLS requirements
  *
  * {@link tenantDb} requires an explicit `sslmode` for remote hosts and refuses
@@ -50,11 +80,12 @@
  * `sslmode=verify-full` verifies the certificate using the system trust store.
  */
 
-import { createDb, type TenantDb } from "@databrill/core-pg-kysely";
+import { createDb, type CreateDbOptions, type TenantDb } from "@databrill/core-pg-kysely";
 import { Cause, Effect, Either, Exit } from "effect";
 import { tryOrOperationError } from "./effects.ts";
 import { makeCompositeKey } from "./makeCompositeKey.ts";
 import { createRawReader, type RawReader } from "./rawSql.ts";
+import { rewriteSupabasePoolerUri } from "./supabasePoolerRewrite.ts";
 
 /** Where a tenant database is and which schema holds its tables. */
 export interface TenantSource {
@@ -81,7 +112,63 @@ export interface TenantDbOptions {
 	 * Defaults to {@link moduleTenantDbCache}.
 	 */
 	readonly cache?: TenantDbCache;
+
+	/**
+	 * Pool sizing and lifetime, passed to `createDb()`. `max` defaults to
+	 * {@link DEFAULT_TENANT_POOL_MAX}; every other field to `pg`'s own default.
+	 *
+	 * Read only when a pool is OPENED. A later call for the same source and
+	 * `pooler` in the same cache gets the open handle, whatever `pool` it
+	 * passes: the first open wins. Opening a second pool instead would double
+	 * this process's share of the role's connection limit, which is the thing
+	 * the setting exists to bound. To change the settings, close the handle with
+	 * {@link destroyTenantDb} first, or open into a different cache.
+	 */
+	readonly pool?: TenantPoolOptions;
+
+	/**
+	 * Which Supabase pooler to connect through. `"transaction"`, the default,
+	 * opens a session-pooler URL (`*.pooler.supabase.com`, port 5432 or none) on
+	 * port 6543; any other URL is unaffected. `"as-given"` opens the URL exactly
+	 * as written.
+	 *
+	 * Pass `"as-given"` when the calling code needs session state, which the
+	 * transaction pooler does not keep between transactions:
+	 *
+	 * - a session-level `SET` (rather than `SET LOCAL` inside a transaction);
+	 * - a temporary table used across more than one transaction;
+	 * - `LISTEN` / `NOTIFY`;
+	 * - session-level advisory locks (`pg_advisory_lock`, not the `_xact_` forms);
+	 * - a cursor declared `WITH HOLD`;
+	 * - a named prepared statement.
+	 *
+	 * The two modes are different handles: the effective URL is part of the
+	 * cache key, so an opted-out pool and a default one for the same source are
+	 * never shared.
+	 */
+	readonly pooler?: TenantPooler;
 }
+
+/** The pool settings a caller may choose; the rest of `createDb()`'s options are this module's. */
+export type TenantPoolOptions = Pick<
+	CreateDbOptions,
+	| "max"
+	| "min"
+	| "idleTimeoutMillis"
+	| "connectionTimeoutMillis"
+	| "maxUses"
+	| "maxLifetimeSeconds"
+	| "allowExitOnIdle"
+>;
+
+/** See {@link TenantDbOptions.pooler}. */
+export type TenantPooler = "transaction" | "as-given";
+
+/**
+ * The default pool size. Half of the connection limit every tenant login role
+ * is provisioned with, so two processes at full pool still fit under it.
+ */
+export const DEFAULT_TENANT_POOL_MAX = 5;
 
 /** The default cache belongs to this module instance; callers manage its cleanup. */
 const moduleCache: TenantDbCache = new Map<string, TenantHandles>();
@@ -169,7 +256,9 @@ export function assertExplicitSslMode(postgresUrl: string): Either.Either<void, 
 }
 
 /**
- * The memoisation key for a source.
+ * The memoisation key for a source. {@link tenantDb} passes the EFFECTIVE
+ * source, after the pooler rewrite, so the two `pooler` modes never share a
+ * handle.
  *
  * Component escaping keeps distinct URL/schema pairs distinct, including tabs.
  */
@@ -190,23 +279,30 @@ function sourceKey(source: TenantSource): string {
  * `db` is read-only over every published table and view, `write` covers the
  * tables customers are meant to write, `raw` runs SQL the typed surface cannot
  * express, and all three share one pool.
+ *
+ * The pool holds at most {@link DEFAULT_TENANT_POOL_MAX} connections unless
+ * `options.pool` says otherwise, and a Supabase session-pooler URL is opened on
+ * the transaction pooler unless `options.pooler` is `"as-given"`; see this
+ * module's docblock for both.
  */
 export function tenantDb(source: TenantSource, options: TenantDbOptions = {}): Effect.Effect<TenantHandles, Error> {
 	const cache = options.cache ?? moduleCache;
 	return withTenantDbCacheLock(
 		cache,
 		Effect.gen(function* () {
-			const key = sourceKey(source);
+			const effective = effectiveSource(source, options.pooler ?? "transaction");
+			const key = sourceKey(effective);
 			const existing = yield* tryOrOperationError(() => cache.get(key));
 			if (existing !== undefined) {
 				return existing;
 			}
 
-			yield* assertExplicitSslMode(source.postgresUrl);
+			// The rewrite keeps the query string, so this reads the same `sslmode`.
+			yield* assertExplicitSslMode(effective.postgresUrl);
 
 			// `createDb()` interprets the connection string's TLS options. The cache
 			// lock keeps acquisition from returning a handle while teardown closes it.
-			const handle = yield* createDb({ connectionString: source.postgresUrl, schema: source.schema });
+			const handle = yield* createDb(createDbOptions(effective, options.pool));
 			const handles: TenantHandles = { ...handle, raw: createRawReader(handle.pool) };
 			const recorded = yield* Effect.exit(
 				tryOrOperationError(() => cache.set(key, handles)),
@@ -220,6 +316,24 @@ export function tenantDb(source: TenantSource, options: TenantDbOptions = {}): E
 			return handles;
 		}),
 	);
+}
+
+/** `source` with the URL {@link tenantDb} actually opens under `pooler`. */
+function effectiveSource(source: TenantSource, pooler: TenantPooler): TenantSource {
+	if (pooler === "as-given") {
+		return source;
+	}
+	return { ...source, postgresUrl: rewriteSupabasePoolerUri(source.postgresUrl, "transaction").uri };
+}
+
+/** What {@link tenantDb} hands `createDb()` for an already-effective source. */
+function createDbOptions(source: TenantSource, pool: TenantPoolOptions = {}): CreateDbOptions {
+	return {
+		...pool,
+		max: pool.max ?? DEFAULT_TENANT_POOL_MAX,
+		connectionString: source.postgresUrl,
+		schema: source.schema,
+	};
 }
 
 // Weak keys keep per-cache coordination from retaining a consumer's discarded cache.
@@ -262,9 +376,10 @@ function shareCleanup(
 }
 
 /**
- * Destroy and forget the handle for one source, if it is open.
+ * Destroy and forget the handles for one source, if they are open: the default
+ * one and the `pooler: "as-given"` one, which may be two different pools.
  *
- * Use this to close one workspace's handle while the rest of the cache stays
+ * Use this to close one workspace's handles while the rest of the cache stays
  * open: a long-running process that is finished with one workspace, or a caller
  * that has learned its connection string is wrong. `destroyAllTenantDbs` is the
  * shutdown path. If closing fails, the handle stays cached and the error is
@@ -280,11 +395,17 @@ export function destroyTenantDb(
 		withTenantDbCacheLock(
 			cache,
 			Effect.gen(function* () {
-				const key = sourceKey(source);
-				const handles = yield* tryOrOperationError(() => cache.get(key));
-				if (handles !== undefined) {
-					yield* handles.destroy();
-					yield* tryOrOperationError(() => cache.delete(key));
+				const keys = new Set(
+					(["transaction", "as-given"] as const).map((pooler: TenantPooler): string =>
+						sourceKey(effectiveSource(source, pooler))
+					),
+				);
+				for (const key of keys) {
+					const handles = yield* tryOrOperationError(() => cache.get(key));
+					if (handles !== undefined) {
+						yield* handles.destroy();
+						yield* tryOrOperationError(() => cache.delete(key));
+					}
 				}
 			}),
 		),
@@ -326,3 +447,12 @@ export function destroyAllTenantDbs(cache: TenantDbCache = moduleCache): Effect.
 		),
 	);
 }
+
+// ============================================================================
+// Testing Export (only non-exported internals)
+// ============================================================================
+
+export const TESTING = {
+	createDbOptions,
+	effectiveSource,
+};

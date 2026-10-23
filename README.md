@@ -37,7 +37,7 @@ this package's own `deno.json`.** So every bare specifier under `src/` is a line
 	"imports": {
 		"effect": "npm:effect@3.21.2",
 		// Needed by everything in this package.
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.16",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.17",
 	},
 }
 ```
@@ -57,9 +57,43 @@ through `$1` placeholders. You do not need `postgres`, `pg`, or a driver of your
   `deno run -A extern/.../src/cli/query.ts` uses this package's manifest. A consumer importing a
   CLI module directly must also declare those dependencies; importing the library does not require them.
 
+## Bun and Node consumers
+
+The package is developed under Deno and runs under Deno, Node and Bun: `src/` uses `node:` builtins and
+`process`, never the `Deno` namespace, and a test enforces that. Bun and Node read no import map; they resolve
+each bare specifier from the `node_modules` above the importing file, which is your repo's. So your
+`package.json` carries the packages instead, and the ones the commands use as well, because a command run by path
+under Bun or Node does not see this package's `deno.json`:
+
+```jsonc
+{
+	"dependencies": {
+		"effect": "3.21.2",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.17",
+		// Only to run the commands, or to import a file under src/cli/.
+		"@effect/cli": "0.75.0",
+		"@effect/platform": "0.96.1",
+		"@effect/platform-node": "0.106.0",
+	},
+}
+```
+
+`@databrill/core-pg-kysely` comes from JSR's npm registry, so add `@jsr:registry=https://npm.jsr.io` to your
+`.npmrc`. It depends on `kysely` (`^0.29.0`) and `pg` (`^8.16.3`) itself, so neither needs a line of its own;
+list them only if your own code imports them. Keep one copy of `effect`: a version your package manager can
+share with `@databrill/core-pg-kysely`'s `^3.21.2` range. The `@effect/*` versions are the ones this package is
+tested with; a newer patch release of each works.
+
+`@databrill/core-pg-kysely` needs a `Temporal` global. Bun has one. Node does not, so add
+`temporal-polyfill` and load it before anything connects: `import "temporal-polyfill/global"` in your own
+code, or `node --import temporal-polyfill/global` for a command. `--help` and `--check` open no connection and
+work without it.
+
+Node runs the `.ts` sources directly through its type stripping, which needs Node 22.18 or later.
+
 ## The two task lines
 
-Put these in your `deno.json` `tasks` instead of a script in your repo:
+Under Deno, put these in your `deno.json` `tasks` instead of a script in your repo:
 
 ```jsonc
 {
@@ -76,6 +110,19 @@ deno run -A extern/databrill-core-client-kit/src/cli/query.ts --wsid 123456789 "
 ```
 
 Add `--env-file=.env` to either line if your connection string comes from a `.env`.
+
+Under Bun, the same commands go in `package.json` `scripts`:
+
+```bash
+bun --env-file=.env extern/databrill-core-client-kit/src/cli/seedCatalog.ts --brand acme --wsid 123456789
+bun --env-file=.env extern/databrill-core-client-kit/src/cli/query.ts --wsid 123456789 "SELECT 1"
+```
+
+Under Node:
+
+```bash
+node --env-file=.env --import temporal-polyfill/global extern/databrill-core-client-kit/src/cli/query.ts --wsid 123456789 "SELECT 1"
+```
 
 Both commands refuse an option they do not define rather than ignoring it. `--formta json` would otherwise run
 with the default format, and a mistyped `--wsid` must never silently select another workspace.
@@ -209,7 +256,22 @@ Field by field:
   one effective-dated interval. See the section below — it has more rules than the other five put together,
   because its primary key is six columns wide and none of its mistakes fail loudly on their own.
 
-Everything not listed as required may be absent or `null`.
+Everything not listed as required may be absent, `null` or a value, and **the three mean different things on a
+row that already exists**:
+
+- **absent**: the column keeps whatever the row holds. A new row gets the column's default (`NULL`, or `BOTH`
+  for `appliesTo`).
+- **`null`**, or `""` for a text field: the column is cleared. `appliesTo` cannot be empty, so `null` resets it
+  to `BOTH`.
+- **a value**: the column is set to it.
+
+This is what lets a committed `catalog.json` be re-seeded safely. The SKU mappings and per-country family and
+label overrides made through the MCP (an ASIN's `msku`, `countryToFamily`, `countryToLabelInFamily`, a family's
+`msku`) are not in a seed file written before them, and a re-seed from that file leaves them as they are. To
+remove one, say `null` for it.
+
+The one exception is the ontology `data` and `dataResolved` on categories and variants. `dataResolved` is
+computed from `data` and from the category, so both are written on every run, and an absent `data` is `{}`.
 
 - **`wsid`**, when given, is the workspace the seed says it is for. It is **not** the write target — required
   `--wsid` is. The two are checked against each other and a disagreement writes nothing. Say it when the seed
@@ -224,13 +286,13 @@ Three behaviours worth knowing before you run it:
   the variant's own `data` written over them. State `dataResolved` outright on either and that value is used as
   it stands — and on a category it is also what its variants inherit, so the two escape hatches agree.
 - **A seed is the whole configuration, not a fragment.** Every category, variant and family a row references
-  must be declared in the _same_ seed; rows already in the database do not count. So adding one ASIN to an
+  must be declared in the same seed; rows already in the database do not count. So adding one ASIN to an
   existing variant means declaring that variant in the seed too. That is what buys the whole check before a
   transaction is opened, rather than a constraint violation raised part-way through one.
 - **Every table is upserted on its primary key, and nothing is deleted.** Running the same seed twice is the
-  same as running it once, and re-stating a row the database already has changes nothing about it. A row the
-  seed no longer mentions stays, because deleting it would need to cascade into ASINs and families the seed
-  knows nothing about.
+  same as running it once. A row the seed restates gets the columns the seed states and keeps the rest, as
+  above. A row the seed no longer mentions stays, because deleting it would need to cascade into ASINs and
+  families the seed knows nothing about.
 
 A seed is validated in full before anything is written, and every problem is reported at once rather than the
 first. `--check` does the validation and stops.
@@ -250,7 +312,7 @@ whose interval covers it: `SKU` → `ASIN` → `FAMILY` → `STORE` → `COUNTRY
 | `country`    | Two-letter marketplace code, **already upper case**.                                                                                          |
 | `attribute`  | The attribute name, **already upper case**. Open-ended: a new one needs no schema change.                                                     |
 | `dateFirst`  | `YYYY-MM-DD`, inclusive. Required.                                                                                                            |
-| `dateLast`   | `YYYY-MM-DD`, **inclusive**. Absent or `null` means still in force.                                                                           |
+| `dateLast`   | `YYYY-MM-DD`, **inclusive**. `null` means still in force; absent keeps an existing row's value, and a new row is in force.                    |
 | `value`      | A finite number. `UNIT_COGS` is a landed unit cost; `VAT_RATE` is a fraction such as `0.2`.                                                   |
 | `currency`   | Three-letter ISO code for a cost attribute; absent for a rate.                                                                                |
 | `source`     | `ACTUAL`, `INFERRED` or `DEFAULT`.                                                                                                            |
@@ -306,9 +368,52 @@ console.log(formatRows(await Effect.runPromise(program), "table"));
 `raw` runs SQL the typed surface cannot express, and all three share one pool.
 
 `destroyAllTenantDbs(cache)` destroys every handle in `cache` and empties it, for shutdown.
-`destroyTenantDb(source, cache)` destroys and forgets only the handle opened with the same
-`{ postgresUrl, schema }` as `source` and leaves the rest of the cache open, for a process that is finished with
-one workspace. Both use the module cache when `cache` is left out.
+`destroyTenantDb(source, cache)` destroys and forgets only the handles opened with the same
+`{ postgresUrl, schema }` as `source` (under either `pooler` mode, below) and leaves the rest of the cache open,
+for a process that is finished with one workspace. Both use the module cache when `cache` is left out.
+
+### Pool size
+
+```ts
+const { db } = yield* tenantDb(source, { pool: { max: 3, idleTimeoutMillis: 20_000, connectionTimeoutMillis: 10_000 } });
+```
+
+A pool holds at most 5 connections (`DEFAULT_TENANT_POOL_MAX`) unless `pool.max` says otherwise. Every tenant
+login role has a connection limit of 10, shared by every process that connects as it: your dev server, a command
+run, the deployed app. `pg`'s own default of 10 would let one process take all of them and fail the next with
+`too many connections for role`. `pool` also accepts `min`, `idleTimeoutMillis`, `connectionTimeoutMillis`,
+`maxUses`, `maxLifetimeSeconds` and `allowExitOnIdle`, with `pg`'s defaults.
+
+**The first open wins.** `pool` is read when a pool is opened. A later `tenantDb()` call for the same source in
+the same cache gets the open handle whatever `pool` it passes, rather than a second pool that would double this
+process's share of the role's limit. To change the settings, call `destroyTenantDb(source, cache)` first, or open
+into another cache.
+
+### Supabase's transaction pooler is the default
+
+A connection string for Supabase's session pooler (host `*.pooler.supabase.com`, port 5432 or none, user
+`<role>.<20-character project ref>`) is opened on port 6543 of the same host, the transaction pooler. In session
+mode every open client connection pins a server connection for as long as it is open, so idle pools count against
+the role's limit; in transaction mode a server connection is held only while a transaction runs. Any other URL is
+opened exactly as written: a direct host, a local one, a self-hosted pooler, or one already on 6543. The query
+string is kept, so the `sslmode` rule below applies unchanged.
+
+Nothing in this package needs a session. Pass `pooler: "as-given"` when your own code does, which is when it uses:
+
+- a session-level `SET` (`SET LOCAL` inside a transaction is fine);
+- a temporary table across more than one transaction;
+- `LISTEN` / `NOTIFY`;
+- session-level advisory locks (`pg_advisory_lock`; the `_xact_` forms are fine);
+- a cursor declared `WITH HOLD`;
+- a named prepared statement.
+
+```ts
+const { raw } = yield* tenantDb(source, { pooler: "as-given" });
+```
+
+It is an option of the call, not of `databrill.config.json`, because whether a session is needed depends on what
+the calling code does, not on where it runs. The two modes never share a handle: the URL actually opened is part
+of the cache key.
 
 Database acquisition, raw queries and teardown return lazy `Effect.Effect<A, Error>` programs.
 Compose with `yield*` and execute at the application boundary. Synchronous validation (`tbl` and
@@ -365,8 +470,8 @@ There is no separate option to disable this check.
 - `disable`: no TLS.
 - `allow`, `prefer`, `require`: encryption without certificate verification.
 - `verify-full`: certificate and server-identity verification using the system trust store.
-- `verify-ca`: requires an explicit `ssl: { ca }` option. The kit's connection interface accepts only
-  `postgresUrl` and `schema`, so this mode fails through `tenantDb()`. Use `createDb()` directly when
+- `verify-ca`: requires an explicit `ssl: { ca }` option. `tenantDb()` accepts no TLS options, so this mode
+  fails through it. Use `createDb()` directly when
   custom TLS options are needed; its explicit `ssl` option takes precedence over the URL's mode.
 
 Unrecognized or empty mode values are rejected.
@@ -406,7 +511,7 @@ The file is discovered in this order, and **nothing in it depends on where this 
 3. an upward search for `databrill.config.json` from `rootDir`, which defaults to `process.cwd()`.
 
 That last default is what makes this work from a submodule. Discovery starting at the current directory finds
-_your_ repo's config; discovery starting at this module's own location would find a directory inside
+your repo's config; discovery starting at this module's own location would find a directory inside
 `extern/databrill-core-client-kit/`, report that no workspace configuration is loaded, and never error.
 
 The file's shape:
@@ -432,7 +537,18 @@ The file's shape:
 ```
 
 `schema` defaults to `w<wsid>` when omitted. `${VAR}` in any value is expanded from the environment, so a
-connection string can be kept out of the file.
+connection string can be kept out of the file. A merchant's `countries` may say `UK`; it is stored as `GB`.
+
+For a country code your users type, `canonicalCountryCode` in `src/lib/amazonConstants.ts` does the same
+folding: it trims, upper-cases and turns `UK` into `GB`. Use it before comparing or storing a code. The
+marketplace table keeps a `UK` entry for the Ads API's spelling, so an unfolded `UK` passes a lookup and then
+matches nothing keyed on `GB`.
+
+```ts
+import { canonicalCountryCode } from "./extern/databrill-core-client-kit/src/lib/amazonConstants.ts";
+
+canonicalCountryCode(" uk "); // "GB"
+```
 
 ## Licence and support
 

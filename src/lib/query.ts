@@ -2,8 +2,9 @@
  * Formatting rows and complete driver results from an ad-hoc SQL statement.
  *
  * These formatters take query results and a selected output format. They never
- * read a file, inspect `Deno.args`, or print. `../cli/query.ts` handles those
- * command concerns and executes statements through `RawReader` in `./rawSql.ts`.
+ * read a file, inspect the process arguments, or print. `../cli/query.ts`
+ * handles those command concerns and executes statements through `RawReader`
+ * in `./rawSql.ts`.
  */
 
 import type { TenantPoolResult } from "@databrill/core-pg-kysely";

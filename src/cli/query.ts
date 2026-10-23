@@ -4,6 +4,7 @@
  *
  * ```
  * deno run -A extern/databrill-core-client-kit/src/cli/query.ts --wsid 123456789 "SELECT 1"
+ * bun extern/databrill-core-client-kit/src/cli/query.ts --wsid 123456789 "SELECT 1"
  * ```
  *
  * This file is the COMMAND: argument parsing, reading a statement from a file,
@@ -22,6 +23,7 @@
 
 import { Args, CliConfig, Command, HelpDoc, Options, ValidationError } from "@effect/cli";
 import { Cause, Effect, Either, Exit } from "effect";
+import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import process from "node:process";
 import { acquireTenantDbCache } from "../lib/acquireTenantDbCache.ts";
@@ -96,7 +98,7 @@ function queryCommand() {
 			const path = statementPath(flags.file, rootDir);
 			const statement = path === null
 				? positional
-				: yield* tryPromiseOrOperationError(() => Deno.readTextFile(path));
+				: yield* tryPromiseOrOperationError(() => readFile(path, "utf8"));
 			if (statement.trim() === "") {
 				return yield* Effect.fail(
 					new Error(
@@ -132,7 +134,7 @@ export function main(args: readonly string[]): Effect.Effect<number, Error | Val
 }
 
 if (import.meta.main) {
-	const result = await Effect.runPromiseExit(main(Deno.args));
+	const result = await Effect.runPromiseExit(main(process.argv.slice(2)));
 	if (Exit.isFailure(result)) {
 		// Effect CLI already prints argument-validation errors.
 		if (result.cause._tag === "Fail") {
@@ -143,7 +145,7 @@ if (import.meta.main) {
 		} else {
 			console.error(Cause.pretty(result.cause));
 		}
-		Deno.exit(1);
+		process.exit(1);
 	}
-	Deno.exit(result.value);
+	process.exit(result.value);
 }

@@ -33,6 +33,9 @@
  * - `@databrill/core-pg-kysely` — database handles
  * - `effect` — Effect 3.21.2
  *
+ * A Bun or Node consumer has no import map and carries the same packages in its
+ * `package.json`; `../README.md` § "Bun and Node consumers" lists them.
+ *
  * These imports use one Effect version and one Postgres driver. `@databrill/core-pg-kysely` opens the pool; `./lib/rawSql.ts`
  * runs the statements the typed surface cannot express, on that same pool,
  * through `$1` placeholders. The boundary scan in
@@ -51,6 +54,7 @@
 
 export {
 	assertExplicitSslMode,
+	DEFAULT_TENANT_POOL_MAX,
 	destroyAllTenantDbs,
 	destroyTenantDb,
 	globalTenantDbCache,
@@ -58,7 +62,14 @@ export {
 	newTenantDbCache,
 	tenantDb,
 } from "./lib/tenantDb.ts";
-export type { TenantDbCache, TenantDbOptions, TenantHandles, TenantSource } from "./lib/tenantDb.ts";
+export type {
+	TenantDbCache,
+	TenantDbOptions,
+	TenantHandles,
+	TenantPooler,
+	TenantPoolOptions,
+	TenantSource,
+} from "./lib/tenantDb.ts";
 
 export { createRawReader, tbl } from "./lib/rawSql.ts";
 export type { RawReader } from "./lib/rawSql.ts";

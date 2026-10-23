@@ -5,8 +5,8 @@
  * This is the LIBRARY half of the `seedCatalog` command. It takes a seed that
  * has already been parsed from somewhere — a `brands/<slug>/catalog.json` in
  * the consumer's repo, a spreadsheet export, a fixture built in a test — and
- * never reads a file, never looks at `Deno.args` and never prints usage. The
- * command that does those things is `./cli/seedCatalog.ts`, and the
+ * never reads a file, never looks at the process arguments and never prints
+ * usage. The command that does those things is `./cli/seedCatalog.ts`, and the
  * `brands/<slug>/catalog.json` layout is a convention of that command alone.
  *
  * ## Order of writes, and why it is not an implementation detail
@@ -87,12 +87,33 @@
  * in the database do not count, so a seed that adds one ASIN to an existing
  * variant has to declare that variant too. That is the cost of validating the
  * whole thing before opening a transaction, and it is not in tension with
- * nothing being deleted: writing is an upsert per row, so re-stating a row the
- * database already has changes nothing about it.
+ * nothing being deleted: writing is an upsert per row.
+ *
+ * ## A key the seed leaves out is a column the seed leaves alone
+ *
+ * The configuration tables are also written through the MCP: SKU mappings,
+ * per-country family and label overrides. A seed file committed before those
+ * edits does not mention them, and re-seeding from it must not erase them. So
+ * every optional column follows one rule:
+ *
+ * - **key absent** — an existing row keeps its value; a new row gets the
+ *   column's default (`NULL`, or `'BOTH'` for `appliesTo`);
+ * - **`null`, or `""` for a text column** — the column is cleared;
+ * - **a value** — the column is set to it.
+ *
+ * {@link parseCatalog} keeps the first two apart: an absent key is `undefined`
+ * on the parsed row and an explicit one is `null`. The writer puts a column in
+ * `ON CONFLICT … DO UPDATE SET` only for rows that state it, and since one
+ * statement has one `SET` list, it writes each table in one insert per set of
+ * stated columns — see {@link groupByStatedColumns}.
+ *
+ * The exception is the ontology `data` and `dataResolved`. `dataResolved` is
+ * computed from `data` and from the category, so both are written on every
+ * run, and an absent `data` is `{}`.
  */
 
 import type { Json, TenantDb } from "@databrill/core-pg-kysely";
-import { Cause, Effect, Either, Exit } from "effect";
+import { Cause, DateTime, Effect, Either, Exit } from "effect";
 import { tryOrOperationError, tryPromiseOrOperationError } from "./effects.ts";
 import { makeCompositeKey } from "./makeCompositeKey.ts";
 
@@ -112,19 +133,26 @@ export const ONTOLOGY_APPLIES_TO = ["CATEGORY", "VARIANT", "BOTH"] as const;
 /** One of {@link ONTOLOGY_APPLIES_TO}. */
 export type OntologyAppliesTo = typeof ONTOLOGY_APPLIES_TO[number];
 
-/** A row of `brand_config_ontology_metadata`: one declared ontology property. */
+/**
+ * A row of `brand_config_ontology_metadata`: one declared ontology property.
+ *
+ * In this and every row type below, an optional field left `undefined` means
+ * the seed did not state it: an existing row keeps its value. `null` clears the
+ * column. See the module docblock.
+ */
 export interface OntologyPropertySeed {
 	readonly property: string;
 	readonly valueType: string;
-	readonly appliesTo: OntologyAppliesTo;
-	readonly valuesAllowed: Json | null;
-	readonly description: string | null;
+	/** `null` in the seed resets the column to its default, `BOTH`. */
+	readonly appliesTo?: OntologyAppliesTo;
+	readonly valuesAllowed?: Json | null;
+	readonly description?: string | null;
 }
 
 /** A row of `brand_config_ontology_category`. */
 export interface OntologyCategorySeed {
 	readonly category: string;
-	readonly description: string | null;
+	readonly description?: string | null;
 	readonly data: Readonly<Record<string, Json>>;
 	/** Stated outright, or resolved from {@link data}; see the module docblock. */
 	readonly dataResolved: Readonly<Record<string, Json>> | null;
@@ -142,10 +170,10 @@ export interface OntologyVariantSeed {
 /** A row of `brand_config_amazon_family`. */
 export interface AmazonFamilySeed {
 	readonly family: string;
-	readonly category: string | null;
-	readonly msku: string | null;
-	readonly label: string | null;
-	readonly description: string | null;
+	readonly category?: string | null;
+	readonly msku?: string | null;
+	readonly label?: string | null;
+	readonly description?: string | null;
 }
 
 /**
@@ -196,25 +224,25 @@ export interface AmazonAttributeSeed {
 	/** Interval start, inclusive, `YYYY-MM-DD`. */
 	readonly dateFirst: string;
 	/** Interval end, INCLUSIVE. `null` means still in force. */
-	readonly dateLast: string | null;
+	readonly dateLast?: string | null;
 	readonly value: number;
 	/** ISO currency for a cost attribute; `null` for a rate. */
-	readonly currency: string | null;
+	readonly currency?: string | null;
 	readonly source: string;
 	readonly confidence: string;
-	readonly notes: string | null;
+	readonly notes?: string | null;
 }
 
 /** A row of `brand_config_amazon_asin`. */
 export interface AmazonAsinSeed {
 	readonly asin: string;
-	readonly msku: string | null;
-	readonly family: string | null;
-	readonly countryToFamily: Readonly<Record<string, Json>> | null;
-	readonly labelInFamily: string | null;
-	readonly countryToLabelInFamily: Readonly<Record<string, Json>> | null;
-	readonly labelStandalone: string | null;
-	readonly description: string | null;
+	readonly msku?: string | null;
+	readonly family?: string | null;
+	readonly countryToFamily?: Readonly<Record<string, Json>> | null;
+	readonly labelInFamily?: string | null;
+	readonly countryToLabelInFamily?: Readonly<Record<string, Json>> | null;
+	readonly labelStandalone?: string | null;
+	readonly description?: string | null;
 }
 
 /**
@@ -359,16 +387,19 @@ function objectField(
 	return out;
 }
 
-/** A JSON object, or `null` when the field is absent — the two are different here. */
+/**
+ * A JSON object, `null` when the seed says `null`, or `undefined` when the key
+ * is absent. `{}` is different from all three here.
+ */
 function nullableObjectField(
 	row: Record<string, unknown>,
 	key: string,
 	path: string,
 	problems: string[],
-): Record<string, Json> | null {
+): Record<string, Json> | null | undefined {
 	const value = row[key];
 	if (value === undefined || value === null) {
-		return null;
+		return value;
 	}
 	return objectField(row, key, path, problems);
 }
@@ -383,10 +414,22 @@ function requiredString(row: Record<string, unknown>, key: string, path: string,
 	return value;
 }
 
-/** A string, or `null` when absent. An empty string is `null` too — a blank cell means "not set". */
-function optionalString(row: Record<string, unknown>, key: string, path: string, problems: string[]): string | null {
+/**
+ * A string, `null` when the seed says `null`, or `undefined` when the key is
+ * absent. An empty string is `null` too: a blank cell states the column and
+ * leaves it empty, which is different from a column the seed does not mention.
+ */
+function optionalString(
+	row: Record<string, unknown>,
+	key: string,
+	path: string,
+	problems: string[],
+): string | null | undefined {
 	const value = row[key];
-	if (value === undefined || value === null || value === "") {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (value === null || value === "") {
 		return null;
 	}
 	if (typeof value !== "string") {
@@ -521,26 +564,21 @@ function parseCatalogSub(value: unknown, options: ParseCatalogOptions = {}): Cat
 
 	for (const key of Object.keys(value)) {
 		if (!SEED_KEYS.some((allowed: string): boolean => allowed === key)) {
-			problems.push(
-				`${JSON.stringify(key)}: not a key of a families seed (known: ${SEED_KEYS.join(", ")})` +
-					(key === "attributes"
-						? `. This seeder does not write brand_config_amazon_attributes; ` +
-							`keep that seeding in the repo rather than losing it silently here.`
-						: ""),
-			);
+			problems.push(`${JSON.stringify(key)}: not a key of a families seed (known: ${SEED_KEYS.join(", ")})`);
 		}
 	}
 
 	// Not `requiredString`: a seed built in memory by a caller that already knows
 	// which handle it is writing through has nothing to name.
-	const wsid = optionalString(value, "wsid", "seed", problems);
+	const wsid = optionalString(value, "wsid", "seed", problems) ?? null;
 
 	const properties: OntologyPropertySeed[] = [];
 	for (const [index, row] of rowsOf(value, "properties", problems).entries()) {
 		const path = `properties[${index}]`;
 		const property = requiredString(row, "property", path, problems);
 		const rawAppliesTo = row["appliesTo"];
-		let appliesTo: OntologyAppliesTo = "BOTH";
+		// The column is NOT NULL, so clearing it means its default.
+		let appliesTo: OntologyAppliesTo | undefined = rawAppliesTo === null ? "BOTH" : undefined;
 		if (rawAppliesTo !== undefined && rawAppliesTo !== null) {
 			const match = ONTOLOGY_APPLIES_TO.find((allowed: OntologyAppliesTo): boolean => allowed === rawAppliesTo);
 			if (match === undefined) {
@@ -559,7 +597,7 @@ function parseCatalogSub(value: unknown, options: ParseCatalogOptions = {}): Cat
 			valueType: requiredString(row, "valueType", path, problems),
 			appliesTo,
 			valuesAllowed: rawValuesAllowed === undefined || rawValuesAllowed === null
-				? null
+				? rawValuesAllowed
 				: toJson(rawValuesAllowed, `${path}.valuesAllowed`, problems),
 			description: optionalString(row, "description", path, problems),
 		});
@@ -577,7 +615,8 @@ function parseCatalogSub(value: unknown, options: ParseCatalogOptions = {}): Cat
 			category: requiredString(row, "category", path, problems),
 			description: optionalString(row, "description", path, problems),
 			data: objectField(row, "data", path, problems),
-			dataResolved: nullableObjectField(row, "dataResolved", path, problems),
+			// Absent and null both mean "resolve it here"; see the module docblock.
+			dataResolved: nullableObjectField(row, "dataResolved", path, problems) ?? null,
 		});
 	}
 	reportDuplicates(
@@ -602,7 +641,7 @@ function parseCatalogSub(value: unknown, options: ParseCatalogOptions = {}): Cat
 			msku,
 			category,
 			data: objectField(row, "data", path, problems),
-			dataResolved: nullableObjectField(row, "dataResolved", path, problems),
+			dataResolved: nullableObjectField(row, "dataResolved", path, problems) ?? null,
 		});
 	}
 	reportDuplicates("variants", variants.map((row: OntologyVariantSeed): string => row.msku), problems);
@@ -613,7 +652,7 @@ function parseCatalogSub(value: unknown, options: ParseCatalogOptions = {}): Cat
 		const path = `families[${index}]`;
 		const family = requiredString(row, "family", path, problems);
 		const category = optionalString(row, "category", path, problems);
-		if (category !== null && !knownCategories.has(category)) {
+		if (typeof category === "string" && !knownCategories.has(category)) {
 			problems.push(
 				`${path}: family ${JSON.stringify(family)} is in category ${JSON.stringify(category)}, ` +
 					`which this seed does not declare (declared: ${describeKnown(knownCategories)})`,
@@ -645,7 +684,7 @@ function parseCatalogSub(value: unknown, options: ParseCatalogOptions = {}): Cat
 			);
 		}
 		const msku = optionalString(row, "msku", path, problems);
-		if (msku !== null && !knownVariants.has(msku)) {
+		if (typeof msku === "string" && !knownVariants.has(msku)) {
 			problems.push(
 				`${path}: ASIN ${JSON.stringify(asin)} names msku ${JSON.stringify(msku)}, which this seed ` +
 					`declares no variant for. brand_config_amazon_asin.msku is a foreign key onto ` +
@@ -654,7 +693,7 @@ function parseCatalogSub(value: unknown, options: ParseCatalogOptions = {}): Cat
 			);
 		}
 		const family = optionalString(row, "family", path, problems);
-		if (family !== null && !knownFamilies.has(family)) {
+		if (typeof family === "string" && !knownFamilies.has(family)) {
 			problems.push(
 				`${path}: ASIN ${JSON.stringify(asin)} is in family ${JSON.stringify(family)}, ` +
 					`which this seed does not declare (declared: ${describeKnown(knownFamilies)})`,
@@ -713,7 +752,7 @@ function parseCatalogSub(value: unknown, options: ParseCatalogOptions = {}): Cat
 			dateField(dateFirst, "dateFirst", path, problems);
 		}
 		const dateLast = optionalString(row, "dateLast", path, problems);
-		if (dateLast !== null) {
+		if (typeof dateLast === "string") {
 			dateField(dateLast, "dateLast", path, problems);
 			// dateLast is INCLUSIVE, so equal dates are a one-day interval and fine.
 			// An inverted pair covers no day at all: a row that can never resolve.
@@ -729,7 +768,7 @@ function parseCatalogSub(value: unknown, options: ParseCatalogOptions = {}): Cat
 			problems.push(`${path}.value: expected a finite number, got ${JSON.stringify(rawValue)}`);
 		}
 		const currency = optionalString(row, "currency", path, problems);
-		if (currency !== null && !/^[A-Z]{3}$/.test(currency)) {
+		if (typeof currency === "string" && !/^[A-Z]{3}$/.test(currency)) {
 			problems.push(
 				`${path}.currency: expected a three-letter ISO currency, got ${JSON.stringify(currency)}. ` +
 					`Leave it out for a rate attribute.`,
@@ -751,7 +790,7 @@ function parseCatalogSub(value: unknown, options: ParseCatalogOptions = {}): Cat
 		});
 	}
 	// The primary key is six columns, so the duplicate check needs a composite
-	// key — and a hand-rolled join is what the root CLAUDE.md forbids: any
+	// key — and a hand-rolled join is what the root AGENTS.md forbids: any
 	// component containing the separator would flatten two distinct rows into
 	// one, and the seed would upsert twice into the same row reporting two.
 	reportDuplicates(
@@ -832,6 +871,9 @@ function resolveVariantData(
  * configuration is all this does, and the narrower parameter is what lets a
  * caller pass a transaction it already owns.
  *
+ * An optional key a seed row leaves out leaves that column alone on an existing
+ * row, and `null` clears it; see the module docblock.
+ *
  * Every table is upserted on its primary key, so running the same seed twice is
  * the same as running it once. Nothing is deleted — a row the seed no longer
  * mentions stays, because deleting it would cascade into ASINs and families the
@@ -841,7 +883,7 @@ function resolveVariantData(
 export function seedCatalog(write: TenantDb["write"], seed: Catalog): Effect.Effect<SeedCatalogResult, Error> {
 	return Effect.uninterruptibleMask((restore) =>
 		Effect.gen(function* () {
-			const now = yield* tryOrOperationError(() => Temporal.Now.instant().toString());
+			const now = DateTime.formatIso(yield* DateTime.now);
 			const categoryData = yield* tryOrOperationError(() =>
 				new Map<string, Readonly<Record<string, Json>>>(
 					seed.categories.map((row: OntologyCategorySeed): [string, Readonly<Record<string, Json>>] => [
@@ -855,23 +897,29 @@ export function seedCatalog(write: TenantDb["write"], seed: Catalog): Effect.Eff
 			// then finish rollback before the caller starts closing the pool.
 			const trx = yield* tryPromiseOrOperationError(() => write.startTransaction().execute());
 			const result = yield* Effect.exit(restore(Effect.gen(function* () {
-				if (seed.properties.length > 0) {
+				// Every table below is written one insert per set of stated optional
+				// columns, so `DO UPDATE SET` touches only what each row states. Kysely
+				// leaves an `undefined` value out of both the column list (the column's
+				// default applies on insert) and the `SET` list.
+				for (const { states, rows } of groupByStatedColumns(seed.properties, PROPERTY_OPTIONAL)) {
 					yield* Effect.uninterruptible(tryPromiseOrOperationError(() =>
 						trx.insertInto("brand_config_ontology_metadata")
-							.values(seed.properties.map((row: OntologyPropertySeed) => ({
+							.values(rows.map((row: OntologyPropertySeed) => ({
 								property: row.property,
 								valueType: row.valueType,
 								appliesTo: row.appliesTo,
-								valuesAllowed: row.valuesAllowed === null ? null : jsonParam(row.valuesAllowed),
+								valuesAllowed: jsonColumn(row.valuesAllowed),
 								description: row.description,
 								updatedAt: now,
 							})))
 							.onConflict((oc) =>
 								oc.column("property").doUpdateSet((eb) => ({
 									valueType: eb.ref("excluded.valueType"),
-									appliesTo: eb.ref("excluded.appliesTo"),
-									valuesAllowed: eb.ref("excluded.valuesAllowed"),
-									description: eb.ref("excluded.description"),
+									appliesTo: states.has("appliesTo") ? eb.ref("excluded.appliesTo") : undefined,
+									valuesAllowed: states.has("valuesAllowed")
+										? eb.ref("excluded.valuesAllowed")
+										: undefined,
+									description: states.has("description") ? eb.ref("excluded.description") : undefined,
 									updatedAt: now,
 								}))
 							)
@@ -879,10 +927,10 @@ export function seedCatalog(write: TenantDb["write"], seed: Catalog): Effect.Eff
 					));
 				}
 
-				if (seed.categories.length > 0) {
+				for (const { states, rows } of groupByStatedColumns(seed.categories, CATEGORY_OPTIONAL)) {
 					yield* Effect.uninterruptible(tryPromiseOrOperationError(() =>
 						trx.insertInto("brand_config_ontology_category")
-							.values(seed.categories.map((row: OntologyCategorySeed) => ({
+							.values(rows.map((row: OntologyCategorySeed) => ({
 								category: row.category,
 								description: row.description,
 								data: jsonParam(row.data),
@@ -891,7 +939,7 @@ export function seedCatalog(write: TenantDb["write"], seed: Catalog): Effect.Eff
 							})))
 							.onConflict((oc) =>
 								oc.column("category").doUpdateSet((eb) => ({
-									description: eb.ref("excluded.description"),
+									description: states.has("description") ? eb.ref("excluded.description") : undefined,
 									data: eb.ref("excluded.data"),
 									dataResolved: eb.ref("excluded.dataResolved"),
 									updatedAt: now,
@@ -924,10 +972,10 @@ export function seedCatalog(write: TenantDb["write"], seed: Catalog): Effect.Eff
 					));
 				}
 
-				if (seed.families.length > 0) {
+				for (const { states, rows } of groupByStatedColumns(seed.families, FAMILY_OPTIONAL)) {
 					yield* Effect.uninterruptible(tryPromiseOrOperationError(() =>
 						trx.insertInto("brand_config_amazon_family")
-							.values(seed.families.map((row: AmazonFamilySeed) => ({
+							.values(rows.map((row: AmazonFamilySeed) => ({
 								family: row.family,
 								category: row.category,
 								msku: row.msku,
@@ -937,10 +985,10 @@ export function seedCatalog(write: TenantDb["write"], seed: Catalog): Effect.Eff
 							})))
 							.onConflict((oc) =>
 								oc.column("family").doUpdateSet((eb) => ({
-									category: eb.ref("excluded.category"),
-									msku: eb.ref("excluded.msku"),
-									label: eb.ref("excluded.label"),
-									description: eb.ref("excluded.description"),
+									category: states.has("category") ? eb.ref("excluded.category") : undefined,
+									msku: states.has("msku") ? eb.ref("excluded.msku") : undefined,
+									label: states.has("label") ? eb.ref("excluded.label") : undefined,
+									description: states.has("description") ? eb.ref("excluded.description") : undefined,
 									updatedAt: now,
 								}))
 							)
@@ -948,31 +996,37 @@ export function seedCatalog(write: TenantDb["write"], seed: Catalog): Effect.Eff
 					));
 				}
 
-				if (seed.asins.length > 0) {
+				for (const { states, rows } of groupByStatedColumns(seed.asins, ASIN_OPTIONAL)) {
 					yield* Effect.uninterruptible(tryPromiseOrOperationError(() =>
 						trx.insertInto("brand_config_amazon_asin")
-							.values(seed.asins.map((row: AmazonAsinSeed) => ({
+							.values(rows.map((row: AmazonAsinSeed) => ({
 								asin: row.asin,
 								msku: row.msku,
 								family: row.family,
-								countryToFamily: row.countryToFamily === null ? null : jsonParam(row.countryToFamily),
+								countryToFamily: jsonColumn(row.countryToFamily),
 								labelInFamily: row.labelInFamily,
-								countryToLabelInFamily: row.countryToLabelInFamily === null
-									? null
-									: jsonParam(row.countryToLabelInFamily),
+								countryToLabelInFamily: jsonColumn(row.countryToLabelInFamily),
 								labelStandalone: row.labelStandalone,
 								description: row.description,
 								updatedAt: now,
 							})))
 							.onConflict((oc) =>
 								oc.column("asin").doUpdateSet((eb) => ({
-									msku: eb.ref("excluded.msku"),
-									family: eb.ref("excluded.family"),
-									countryToFamily: eb.ref("excluded.countryToFamily"),
-									labelInFamily: eb.ref("excluded.labelInFamily"),
-									countryToLabelInFamily: eb.ref("excluded.countryToLabelInFamily"),
-									labelStandalone: eb.ref("excluded.labelStandalone"),
-									description: eb.ref("excluded.description"),
+									msku: states.has("msku") ? eb.ref("excluded.msku") : undefined,
+									family: states.has("family") ? eb.ref("excluded.family") : undefined,
+									countryToFamily: states.has("countryToFamily")
+										? eb.ref("excluded.countryToFamily")
+										: undefined,
+									labelInFamily: states.has("labelInFamily")
+										? eb.ref("excluded.labelInFamily")
+										: undefined,
+									countryToLabelInFamily: states.has("countryToLabelInFamily")
+										? eb.ref("excluded.countryToLabelInFamily")
+										: undefined,
+									labelStandalone: states.has("labelStandalone")
+										? eb.ref("excluded.labelStandalone")
+										: undefined,
+									description: states.has("description") ? eb.ref("excluded.description") : undefined,
 									updatedAt: now,
 								}))
 							)
@@ -980,10 +1034,10 @@ export function seedCatalog(write: TenantDb["write"], seed: Catalog): Effect.Eff
 					));
 				}
 
-				if (seed.attributes.length > 0) {
+				for (const { states, rows } of groupByStatedColumns(seed.attributes, ATTRIBUTE_OPTIONAL)) {
 					yield* Effect.uninterruptible(tryPromiseOrOperationError(() =>
 						trx.insertInto("brand_config_amazon_attributes")
-							.values(seed.attributes.map((row: AmazonAttributeSeed) => ({
+							.values(rows.map((row: AmazonAttributeSeed) => ({
 								merchantId: row.merchantId,
 								scope: row.scope,
 								scopeId: row.scopeId,
@@ -1005,12 +1059,12 @@ export function seedCatalog(write: TenantDb["write"], seed: Catalog): Effect.Eff
 							.onConflict((oc) =>
 								oc.columns(["merchantId", "scope", "scopeId", "country", "attribute", "dateFirst"])
 									.doUpdateSet((eb) => ({
-										dateLast: eb.ref("excluded.dateLast"),
+										dateLast: states.has("dateLast") ? eb.ref("excluded.dateLast") : undefined,
 										value: eb.ref("excluded.value"),
-										currency: eb.ref("excluded.currency"),
+										currency: states.has("currency") ? eb.ref("excluded.currency") : undefined,
 										source: eb.ref("excluded.source"),
 										confidence: eb.ref("excluded.confidence"),
-										notes: eb.ref("excluded.notes"),
+										notes: states.has("notes") ? eb.ref("excluded.notes") : undefined,
 										updatedAt: now,
 									}))
 							)
@@ -1050,4 +1104,66 @@ export function seedCatalog(write: TenantDb["write"], seed: Catalog): Effect.Eff
 			return result.value;
 		})
 	);
+}
+
+/**
+ * The optional columns of each table, in the shape of its seed row. A column
+ * listed here is written on conflict only by rows that state it.
+ */
+const PROPERTY_OPTIONAL = ["appliesTo", "valuesAllowed", "description"] as const;
+const CATEGORY_OPTIONAL = ["description"] as const;
+const FAMILY_OPTIONAL = ["category", "msku", "label", "description"] as const;
+const ASIN_OPTIONAL = [
+	"msku",
+	"family",
+	"countryToFamily",
+	"labelInFamily",
+	"countryToLabelInFamily",
+	"labelStandalone",
+	"description",
+] as const;
+const ATTRIBUTE_OPTIONAL = ["dateLast", "currency", "notes"] as const;
+
+/** Rows that state the same optional columns, and which columns those are. */
+interface StatedColumnsGroup<Row, Column extends keyof Row> {
+	readonly states: ReadonlySet<Column>;
+	readonly rows: readonly Row[];
+}
+
+/**
+ * Split `rows` into groups whose members state exactly the same `optional`
+ * columns, in first-seen order.
+ *
+ * One `INSERT … ON CONFLICT DO UPDATE SET` has one `SET` list for every row it
+ * carries, so a row that leaves `msku` out cannot share a statement with a row
+ * that sets it without one of them being written wrongly. A per-row formulation
+ * such as `coalesce(excluded.msku, t.msku)` would make an explicit `null`
+ * impossible to express. A seed has few distinct shapes, typically one per
+ * table, so this costs a handful of statements rather than one per row.
+ */
+function groupByStatedColumns<Row, Column extends keyof Row>(
+	rows: readonly Row[],
+	optional: readonly Column[],
+): readonly StatedColumnsGroup<Row, Column>[] {
+	const groups = new Map<number, { readonly states: ReadonlySet<Column>; readonly rows: Row[] }>();
+	for (const row of rows) {
+		const stated = optional.filter((column: Column): boolean => row[column] !== undefined);
+		const shape = optional.reduce(
+			(bits: number, column: Column, index: number): number =>
+				row[column] === undefined ? bits : bits | (1 << index),
+			0,
+		);
+		const existing = groups.get(shape);
+		if (existing === undefined) {
+			groups.set(shape, { states: new Set(stated), rows: [row] });
+		} else {
+			existing.rows.push(row);
+		}
+	}
+	return [...groups.values()];
+}
+
+/** A `jsonb` column value, keeping "not stated" (`undefined`) and "clear it" (`null`) apart. */
+function jsonColumn(value: Json | null | undefined): string | null | undefined {
+	return value === undefined || value === null ? value : jsonParam(value);
 }

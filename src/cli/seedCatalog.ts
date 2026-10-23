@@ -5,6 +5,7 @@
  *
  * ```
  * deno run -A extern/databrill-core-client-kit/src/cli/seedCatalog.ts --brand acme --wsid 123456789
+ * bun extern/databrill-core-client-kit/src/cli/seedCatalog.ts --brand acme --wsid 123456789
  * ```
  *
  * This file is the COMMAND: argument parsing, reading
@@ -38,6 +39,7 @@
 
 import { CliConfig, Command, HelpDoc, Options, ValidationError } from "@effect/cli";
 import { Cause, Effect, Either, Exit } from "effect";
+import { readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import process from "node:process";
 import { operationError, tryOrOperationError, tryPromiseOrOperationError } from "../lib/effects.ts";
@@ -126,7 +128,7 @@ function seedCatalogCommand() {
 
 			const rootDir = yield* tryOrOperationError(() => resolve(flags.root ?? process.cwd()));
 			const path = yield* seedPath(flags.brand, flags.file, rootDir);
-			const text = yield* tryPromiseOrOperationError(() => Deno.readTextFile(path));
+			const text = yield* tryPromiseOrOperationError(() => readFile(path, "utf8"));
 			const raw: unknown = yield* Effect.try({
 				try: () => JSON.parse(text),
 				catch: (cause) => new Error(`${path} is not valid JSON: ${operationError(cause).message}`, { cause }),
@@ -177,7 +179,7 @@ export function main(args: readonly string[]): Effect.Effect<number, Error | Val
 }
 
 if (import.meta.main) {
-	const result = await Effect.runPromiseExit(main(Deno.args));
+	const result = await Effect.runPromiseExit(main(process.argv.slice(2)));
 	if (Exit.isFailure(result)) {
 		// Effect CLI already prints argument-validation errors.
 		if (result.cause._tag === "Fail") {
@@ -188,7 +190,7 @@ if (import.meta.main) {
 		} else {
 			console.error(Cause.pretty(result.cause));
 		}
-		Deno.exit(1);
+		process.exit(1);
 	}
-	Deno.exit(result.value);
+	process.exit(result.value);
 }

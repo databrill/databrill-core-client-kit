@@ -41,7 +41,7 @@
 import { Effect, Either } from "effect";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve as resolvePath } from "node:path";
-import { countryCodeToMarketplaceInfo } from "./amazonConstants.ts";
+import { canonicalCountryCode, countryCodeToMarketplaceInfo } from "./amazonConstants.ts";
 
 export interface WorkspaceDatabase {
 	readonly postgresUrl: string;
@@ -110,12 +110,6 @@ export interface WorkspaceDirectory {
 	readonly byCountry: ReadonlyMap<string, readonly string[]>;
 	/** merchantId → its (single) wsid */
 	readonly byMerchant: ReadonlyMap<string, string>;
-}
-
-/** UK is an alias for GB throughout Amazon's data; collapse it for matching. */
-function canonCountry(code: string): string {
-	const up = code.trim().toUpperCase();
-	return up === "UK" ? "GB" : up;
 }
 
 /** Replace every `${VAR}` with `process.env.VAR`, collecting any that are unset. */
@@ -256,7 +250,7 @@ function build(parsed: unknown, source: string): Either.Either<Config, Error> {
 					if (typeof c !== "string") {
 						return yield* invalidConfig(source, `merchant "${merchantId}" has a non-string country`);
 					}
-					const canon = canonCountry(c);
+					const canon = canonicalCountryCode(c);
 					if (!(canon in countryCodeToMarketplaceInfo)) {
 						return yield* invalidConfig(source, `merchant "${merchantId}" has unknown country "${c}"`);
 					}
