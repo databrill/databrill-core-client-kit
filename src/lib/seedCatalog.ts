@@ -113,7 +113,8 @@
  */
 
 import type { Json, TenantDb } from "@databrill/core-pg-kysely";
-import { Cause, DateTime, Effect, Either, Exit } from "effect";
+import { DateTime, Effect, Exit, Result } from "effect";
+import { combineCauses } from "./effectCompat.ts";
 import { tryOrOperationError, tryPromiseOrOperationError } from "./effects.ts";
 import { makeCompositeKey } from "./makeCompositeKey.ts";
 
@@ -547,10 +548,10 @@ function reportDuplicates(key: string, values: readonly string[], problems: stri
  * ASIN's `msku` naming a declared variant, and an ASIN that may be an ISBN) be
  * tested without a database.
  */
-export function parseCatalog(value: unknown, options: ParseCatalogOptions = {}): Either.Either<Catalog, Error> {
-	return Either.flatMap(
+export function parseCatalog(value: unknown, options: ParseCatalogOptions = {}): Result.Result<Catalog, Error> {
+	return Result.flatMap(
 		tryOrOperationError(() => parseCatalogSub(value, options)),
-		(result) => result instanceof SeedValidationError ? Either.left(result) : Either.right(result),
+		(result) => result instanceof SeedValidationError ? Result.fail(result) : Result.succeed(result),
 	);
 }
 
@@ -884,18 +885,20 @@ export function seedCatalog(write: TenantDb["write"], seed: Catalog): Effect.Eff
 	return Effect.uninterruptibleMask((restore) =>
 		Effect.gen(function* () {
 			const now = DateTime.formatIso(yield* DateTime.now);
-			const categoryData = yield* tryOrOperationError(() =>
+			const categoryData = yield* Effect.fromResult(tryOrOperationError(() =>
 				new Map<string, Readonly<Record<string, Json>>>(
 					seed.categories.map((row: OntologyCategorySeed): [string, Readonly<Record<string, Json>>] => [
 						row.category,
 						resolveCategoryData(row),
 					]),
 				)
-			);
+			));
 
 			// Controlled transactions let interruption wait for the active statement,
 			// then finish rollback before the caller starts closing the pool.
-			const trx = yield* tryPromiseOrOperationError(() => write.startTransaction().execute());
+			const trx = yield* tryPromiseOrOperationError(() =>
+				write.startTransaction().execute()
+			);
 			const result = yield* Effect.exit(restore(Effect.gen(function* () {
 				// Every table below is written one insert per set of stated optional
 				// columns, so `DO UPDATE SET` touches only what each row states. Kysely
@@ -1087,7 +1090,7 @@ export function seedCatalog(write: TenantDb["write"], seed: Catalog): Effect.Eff
 
 			if (Exit.isFailure(result)) {
 				return yield* Effect.failCause(
-					Exit.isFailure(finished) ? Cause.sequential(result.cause, finished.cause) : result.cause,
+					Exit.isFailure(finished) ? combineCauses(result.cause, finished.cause) : result.cause,
 				);
 			}
 			if (Exit.isFailure(finished)) {
@@ -1096,7 +1099,7 @@ export function seedCatalog(write: TenantDb["write"], seed: Catalog): Effect.Eff
 						trx.rollback().execute()
 					));
 					if (Exit.isFailure(rollback)) {
-						return yield* Effect.failCause(Cause.sequential(finished.cause, rollback.cause));
+						return yield* Effect.failCause(combineCauses(finished.cause, rollback.cause));
 					}
 				}
 				return yield* Effect.failCause(finished.cause);

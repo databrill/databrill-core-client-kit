@@ -38,7 +38,7 @@
  *     alone breaks the canonical copy, not just the links.
  */
 
-import { Effect, Either } from "effect";
+import { Effect, Result } from "effect";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { canonicalCountryCode, countryCodeToMarketplaceInfo } from "./amazonConstants.ts";
@@ -113,10 +113,10 @@ export interface WorkspaceDirectory {
 }
 
 /** Replace every `${VAR}` with `process.env.VAR`, collecting any that are unset. */
-function expandEnv(raw: string): Either.Either<string, Error> {
-	return Either.gen(function* () {
+function expandEnv(raw: string): Result.Result<string, Error> {
+	return Result.gen(function* () {
 		const missing = new Set<string>();
-		const out = yield* Either.try({
+		const out = yield* Result.try({
 			try: () =>
 				raw.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, name: string) => {
 					const val = process.env[name];
@@ -129,7 +129,7 @@ function expandEnv(raw: string): Either.Either<string, Error> {
 			catch: (cause) => new Error("DATABRILL_CONFIG: cannot read environment", { cause }),
 		});
 		if (missing.size > 0) {
-			return yield* Either.left(
+			return yield* Result.fail(
 				new Error(
 					`DATABRILL_CONFIG references undefined environment variable(s): ${[...missing].join(", ")}`,
 				),
@@ -139,8 +139,8 @@ function expandEnv(raw: string): Either.Either<string, Error> {
 	});
 }
 
-function parseFeatures(raw: unknown, source: string): Either.Either<WorkspaceFeatures, Error> {
-	return Either.gen(function* () {
+function parseFeatures(raw: unknown, source: string): Result.Result<WorkspaceFeatures, Error> {
+	return Result.gen(function* () {
 		if (raw === undefined) {
 			return {};
 		}
@@ -187,26 +187,26 @@ export function loadConfig(configPath?: string): Effect.Effect<Config | null, Er
 			catch: (cause) => new Error(`DATABRILL_CONFIG: cannot read ${abs}`, { cause }),
 		});
 
-		const expanded = yield* expandEnv(text);
+		const expanded = yield* Effect.fromResult(expandEnv(text));
 		const parsed: unknown = yield* Effect.try({
 			try: () => JSON.parse(expanded),
 			catch: (cause) => new Error(`DATABRILL_CONFIG: invalid JSON in ${abs}`, { cause }),
 		});
 
-		return yield* build(parsed, abs);
+		return yield* Effect.fromResult(build(parsed, abs));
 	});
 }
 
-function invalidConfig(source: string, message: string): Either.Either<never, Error> {
-	return Either.left(new Error(`DATABRILL_CONFIG (${source}): ${message}`));
+function invalidConfig(source: string, message: string): Result.Result<never, Error> {
+	return Result.fail(new Error(`DATABRILL_CONFIG (${source}): ${message}`));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function build(parsed: unknown, source: string): Either.Either<Config, Error> {
-	return Either.gen(function* () {
+function build(parsed: unknown, source: string): Result.Result<Config, Error> {
+	return Result.gen(function* () {
 		if (!isRecord(parsed)) {
 			return yield* invalidConfig(source, "root must be an object");
 		}
@@ -308,17 +308,17 @@ function build(parsed: unknown, source: string): Either.Either<Config, Error> {
 export function resolveWorkspace<W extends DirectoryWorkspace>(
 	config: { readonly workspaces: Readonly<Record<string, W>> },
 	args: Record<string, unknown>,
-): Either.Either<W, Error> {
-	return Either.gen(function* () {
+): Result.Result<W, Error> {
+	return Result.gen(function* () {
 		const ids = Object.keys(config.workspaces);
 
 		const wsidArg = typeof args["wsid"] === "string" ? args["wsid"].trim() : "";
 		if (wsidArg === "") {
-			return yield* Either.left(new Error(`Pass "wsid" explicitly (one of: ${ids.join(", ")}).`));
+			return yield* Result.fail(new Error(`Pass "wsid" explicitly (one of: ${ids.join(", ")}).`));
 		}
 		const workspace = config.workspaces[wsidArg];
 		if (workspace === undefined) {
-			return yield* Either.left(new Error(`Unknown wsid "${wsidArg}". Configured workspaces: ${ids.join(", ")}`));
+			return yield* Result.fail(new Error(`Unknown wsid "${wsidArg}". Configured workspaces: ${ids.join(", ")}`));
 		}
 		return workspace;
 	});

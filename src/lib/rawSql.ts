@@ -13,7 +13,7 @@
  */
 
 import type { TenantPool, TenantPoolResult } from "@databrill/core-pg-kysely";
-import { Effect, Either } from "effect";
+import { Effect, Result } from "effect";
 
 /**
  * A plain Postgres identifier: what can appear inside double quotes without
@@ -23,16 +23,16 @@ import { Effect, Either } from "effect";
  */
 const PLAIN_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$]*$/;
 
-function assertPlainIdentifier(value: string, what: string): Either.Either<void, Error> {
+function assertPlainIdentifier(value: string, what: string): Result.Result<void, Error> {
 	if (!PLAIN_IDENTIFIER.test(value)) {
-		return Either.left(
+		return Result.fail(
 			new Error(
 				`Invalid ${what} name ${JSON.stringify(value)}: expected a plain Postgres identifier ` +
 					`such as "public" or "w123456789".`,
 			),
 		);
 	}
-	return Either.void;
+	return Result.void;
 }
 
 /**
@@ -47,8 +47,8 @@ function assertPlainIdentifier(value: string, what: string): Either.Either<void,
  * validated rather than escaped: an identifier that needs an escape is a mistake
  * here, not a case to support.
  */
-export function tbl(schema: string, name: string): Either.Either<string, Error> {
-	return Either.gen(function* () {
+export function tbl(schema: string, name: string): Result.Result<string, Error> {
+	return Result.gen(function* () {
 		yield* assertPlainIdentifier(schema, "schema");
 		yield* assertPlainIdentifier(name, "table");
 		return `"${schema}"."${name}"`;

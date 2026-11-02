@@ -35,16 +35,17 @@ this package's own `deno.json`.** So every bare specifier under `src/` is a line
 ```jsonc
 {
 	"imports": {
-		"effect": "npm:effect@3.21.2",
+		"effect": "npm:effect@4.0.6",
 		// Needed by everything in this package.
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.17",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.18",
 	},
 }
 ```
 
-Effect is a public dependency. Use the same Effect version as the consuming application.
+Effect is a public dependency, on Effect 4. Use the same Effect version as the consuming application; an
+application still on Effect 3 cannot import this package.
 The `@databrill/core-pg-kysely` floor above is the lowest release that works, not a suggestion: this
-package's `src/` yields the Effect and Either values that `query()`, `destroy()` and `createDb()` return,
+package's `src/` yields the Effect and Result values that `query()`, `destroy()` and `createDb()` return,
 and earlier releases return Promises. Inside the monorepo the same import resolves to local pg source.
 
 This package uses one Postgres driver. `@databrill/core-pg-kysely`
@@ -52,10 +53,10 @@ opens the pool, and `src/lib/rawSql.ts` runs the statements the typed surface ca
 through `$1` placeholders. You do not need `postgres`, `pg`, or a driver of your own.
 
 - **`src/lib/workspaces.ts` uses the same Effect dependency**, Node builtins and shared config sources.
-- **Effect CLI and its platform dependencies are CLI-only.** This package's `deno.json` declares
-  `@effect/cli`, `@effect/platform` and `@effect/platform-node`. A command run as
-  `deno run -A extern/.../src/cli/query.ts` uses this package's manifest. A consumer importing a
-  CLI module directly must also declare those dependencies; importing the library does not require them.
+- The CLI's platform dependency is CLI-only. The commands take their parser from `effect/cli`, which is
+  part of `effect`, and this package's `deno.json` declares `@effect/platform-node` for running them. A command
+  run as `deno run -A extern/.../src/cli/query.ts` uses this package's manifest. A consumer importing a CLI
+  module directly must also declare `@effect/platform-node`; importing the library does not require it.
 
 ## Bun and Node consumers
 
@@ -68,20 +69,18 @@ under Bun or Node does not see this package's `deno.json`:
 ```jsonc
 {
 	"dependencies": {
-		"effect": "3.21.2",
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.17",
+		"effect": "4.0.6",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.18",
 		// Only to run the commands, or to import a file under src/cli/.
-		"@effect/cli": "0.75.0",
-		"@effect/platform": "0.96.1",
-		"@effect/platform-node": "0.106.0",
+		"@effect/platform-node": "4.0.6",
 	},
 }
 ```
 
 `@databrill/core-pg-kysely` comes from JSR's npm registry, so add `@jsr:registry=https://npm.jsr.io` to your
-`.npmrc`. It depends on `kysely` (`^0.29.0`) and `pg` (`^8.16.3`) itself, so neither needs a line of its own;
+`.npmrc`. It depends on `kysely` (`^0.29.7`) and `pg` (`^8.23.1`) itself, so neither needs a line of its own;
 list them only if your own code imports them. Keep one copy of `effect`: a version your package manager can
-share with `@databrill/core-pg-kysely`'s `^3.21.2` range. The `@effect/*` versions are the ones this package is
+share with `@databrill/core-pg-kysely`'s `4.0.6` pin. The `@effect/*` versions are the ones this package is
 tested with; a newer patch release of each works.
 
 `@databrill/core-pg-kysely` needs a `Temporal` global. Bun has one. Node does not, so add
@@ -306,17 +305,17 @@ whose interval covers it: `SKU` → `ASIN` → `FAMILY` → `STORE` → `COUNTRY
 
 | field        | rule                                                                                                                                          |
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scope`      | One of `SKU`, `ASIN`, `FAMILY`, `STORE`, `COUNTRY`.                                                                                           |
+| `scope`      | One of `SKU`, `ASIN`, `FAMILY`, `STORE`, `COUNTRY`. Required.                                                                                 |
 | `scopeId`    | The msku, asin or family name for the first three. **Must be `""` (or absent) for `STORE` and `COUNTRY`**, which apply to everything in them. |
 | `merchantId` | A specific merchant, or `""` (the default) meaning every merchant.                                                                            |
-| `country`    | Two-letter marketplace code, **already upper case**.                                                                                          |
-| `attribute`  | The attribute name, **already upper case**. Open-ended: a new one needs no schema change.                                                     |
+| `country`    | Two-letter marketplace code, **already upper case**. Required.                                                                                |
+| `attribute`  | The attribute name, **already upper case**. Open-ended: a new one needs no schema change. Required.                                           |
 | `dateFirst`  | `YYYY-MM-DD`, inclusive. Required.                                                                                                            |
 | `dateLast`   | `YYYY-MM-DD`, **inclusive**. `null` means still in force; absent keeps an existing row's value, and a new row is in force.                    |
-| `value`      | A finite number. `UNIT_COGS` is a landed unit cost; `VAT_RATE` is a fraction such as `0.2`.                                                   |
+| `value`      | A finite number. `UNIT_COGS` is a landed unit cost; `VAT_RATE` is a fraction such as `0.2`. Required.                                         |
 | `currency`   | Three-letter ISO code for a cost attribute; absent for a rate.                                                                                |
-| `source`     | `ACTUAL`, `INFERRED` or `DEFAULT`.                                                                                                            |
-| `confidence` | `HIGH`, `MED` or `LOW`.                                                                                                                       |
+| `source`     | `ACTUAL`, `INFERRED` or `DEFAULT`. Required.                                                                                                  |
+| `confidence` | `HIGH`, `MED` or `LOW`. Required.                                                                                                             |
 | `notes`      | Free text, optional.                                                                                                                          |
 
 Three of those are stricter than they look, and each is strict because the mistake it catches is otherwise
@@ -356,7 +355,7 @@ import {
 const program = Effect.gen(function* () {
 	const cache = yield* acquireTenantDbCache();
 	const { write, raw } = yield* tenantDb({ postgresUrl, schema: "w123456789" }, { cache });
-	const seed = yield* parseCatalog(mySeedObject);
+	const seed = yield* Effect.fromResult(parseCatalog(mySeedObject));
 	yield* seedCatalog(write, seed);
 	return yield* raw.rows("SELECT 1 AS one");
 }).pipe(Effect.scoped);
@@ -417,14 +416,16 @@ of the cache key.
 
 Database acquisition, raw queries and teardown return lazy `Effect.Effect<A, Error>` programs.
 Compose with `yield*` and execute at the application boundary. Synchronous validation (`tbl` and
-`assertExplicitSslMode`) returns `Either.Either` immediately and composes with `yield*` too.
-`globalTenantDbCache` returns an Either and creates or finds its cache immediately;
+`assertExplicitSslMode`) returns a `Result.Result` immediately; inside `Effect.gen` compose it with
+`yield* Effect.fromResult(…)`, since Effect 4's `Effect.gen` does not accept a yielded `Result`.
+`globalTenantDbCache` returns a `Result` and creates or finds its cache immediately;
 `moduleTenantDbCache` and `newTenantDbCache` return caches directly.
-Catalog validation with `parseCatalog` returns an `Either.Either<Catalog, Error>` immediately.
+Catalog validation with `parseCatalog` returns a `Result.Result<Catalog, Error>` immediately.
 `seedCatalog` and CLI `main(args)` return lazy Effects; compose them with `yield*`.
-CLI `main(args)` returns `Effect.Effect<number, Error | ValidationError>`: success or help returns 0,
-application failures retain their original Error, and argument errors use Effect CLI's `ValidationError`.
-Effect CLI prints argument errors; executable entry points print application failures and exit with 1.
+CLI `main(args)` returns `Effect.Effect<number, Error | CliError.CliError>`: success or help returns 0,
+application failures retain their original Error, and argument errors use `effect/cli`'s `CliError`.
+`effect/cli` prints argument errors and the usage; executable entry points print application failures and exit
+with 1.
 
 Real Kysely builders still return Promises from `.execute()`;
 wrap those native calls with `Effect.tryPromise` when composing them.
@@ -453,8 +454,8 @@ console.log(formatRows(await Effect.runPromise(program), "table"));
 
 CLI calls use separate caches and wait for their cleanup. Seeder interruption waits for the
 active statement to finish, then rolls back before releasing its pool; this does not promise
-server-side query cancellation. Both commands use `@effect/cli` with Effect handlers, so failures and
-interruption stay in the same Effect runtime. Generated help follows Effect CLI's layout and reports
+server-side query cancellation. Both commands use `effect/cli` with Effect handlers, so failures and
+interruption stay in the same Effect runtime. Generated help follows `effect/cli`'s layout, and `--version` reports
 `unversioned`, because the client kit is pinned by Git commit. SQL positional tokens beginning with a
 dash are refused as unknown options; use `--file` for SQL that starts with a dash.
 
@@ -501,7 +502,7 @@ const { db, raw } = yield * tenantDb({
 
 Config discovery and loading return lazy `Effect.Effect<A, Error>` programs.
 `getWorkspace`, `listWsids`, `merchantIds` and `countries` compose with `yield*`.
-The shared `resolveWorkspace` returns `Either.Either` synchronously;
+The shared `resolveWorkspace` returns a `Result.Result` synchronously;
 `resetWorkspaceConfig` clears the cache synchronously and returns `void`.
 
 The file is discovered in this order, and **nothing in it depends on where this package sits on disk**:

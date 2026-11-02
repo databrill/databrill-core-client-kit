@@ -112,14 +112,14 @@ function isFile(path: string): Effect.Effect<boolean, Error> {
  */
 export function resolveConfigPath(opts: WorkspaceConfigOptions = {}): Effect.Effect<ConfigLocation, Error> {
 	return Effect.gen(function* () {
-		const rootDir = yield* tryOrOperationError(() => resolve(opts.rootDir ?? process.cwd()));
+		const rootDir = yield* Effect.fromResult(tryOrOperationError(() => resolve(opts.rootDir ?? process.cwd())));
 
 		if (opts.configPath !== undefined && opts.configPath !== "") {
 			const path = isAbsolute(opts.configPath) ? opts.configPath : resolve(rootDir, opts.configPath);
 			return { path, searchedFrom: rootDir };
 		}
 
-		const fromEnv = yield* tryOrOperationError(() => process.env["DATABRILL_CONFIG"]);
+		const fromEnv = yield* Effect.fromResult(tryOrOperationError(() => process.env["DATABRILL_CONFIG"]));
 		if (fromEnv !== undefined && fromEnv !== "") {
 			const path = isAbsolute(fromEnv) ? fromEnv : resolve(rootDir, fromEnv);
 			return { path, searchedFrom: rootDir };

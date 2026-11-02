@@ -81,7 +81,8 @@
  */
 
 import { createDb, type CreateDbOptions, type TenantDb } from "@databrill/core-pg-kysely";
-import { Cause, Effect, Either, Exit } from "effect";
+import { Cause, Effect, Exit, Result, Semaphore } from "effect";
+import { causeIsEmpty, combineCauses } from "./effectCompat.ts";
 import { tryOrOperationError } from "./effects.ts";
 import { makeCompositeKey } from "./makeCompositeKey.ts";
 import { createRawReader, type RawReader } from "./rawSql.ts";
@@ -199,7 +200,7 @@ export function newTenantDbCache(): TenantDbCache {
  * instances by design, and a symbol key cannot collide with a consumer's own
  * global.
  */
-export function globalTenantDbCache(name = "databrill.client-kit.tenantDb"): Either.Either<TenantDbCache, Error> {
+export function globalTenantDbCache(name = "databrill.client-kit.tenantDb"): Result.Result<TenantDbCache, Error> {
 	return tryOrOperationError(() => {
 		const key = Symbol.for(name);
 		const existing: unknown = Reflect.get(globalThis, key);
@@ -226,8 +227,8 @@ const LOCAL_HOSTS: ReadonlySet<string> = new Set(["", "localhost", "127.0.0.1", 
  * than going through {@link tenantDb} — needs the same check, and because a
  * check nobody can reach from outside is a check that gets reimplemented.
  */
-export function assertExplicitSslMode(postgresUrl: string): Either.Either<void, Error> {
-	return Either.gen(function* () {
+export function assertExplicitSslMode(postgresUrl: string): Result.Result<void, Error> {
+	return Result.gen(function* () {
 		let parsed: URL;
 		try {
 			parsed = new URL(postgresUrl);
@@ -244,7 +245,7 @@ export function assertExplicitSslMode(postgresUrl: string): Either.Either<void, 
 		if (parsed.searchParams.has("sslmode")) {
 			return;
 		}
-		return yield* Either.left(
+		return yield* Result.fail(
 			new Error(
 				`The connection string for ${host} has no sslmode. Add sslmode=require for a TLS connection ` +
 					`(what a Supabase pooler URL carries), or sslmode=disable to connect in plaintext on purpose. ` +
@@ -292,25 +293,25 @@ export function tenantDb(source: TenantSource, options: TenantDbOptions = {}): E
 		Effect.gen(function* () {
 			const effective = effectiveSource(source, options.pooler ?? "transaction");
 			const key = sourceKey(effective);
-			const existing = yield* tryOrOperationError(() => cache.get(key));
+			const existing = yield* Effect.fromResult(tryOrOperationError(() => cache.get(key)));
 			if (existing !== undefined) {
 				return existing;
 			}
 
 			// The rewrite keeps the query string, so this reads the same `sslmode`.
-			yield* assertExplicitSslMode(effective.postgresUrl);
+			yield* Effect.fromResult(assertExplicitSslMode(effective.postgresUrl));
 
 			// `createDb()` interprets the connection string's TLS options. The cache
 			// lock keeps acquisition from returning a handle while teardown closes it.
-			const handle = yield* createDb(createDbOptions(effective, options.pool));
+			const handle = yield* Effect.fromResult(createDb(createDbOptions(effective, options.pool)));
 			const handles: TenantHandles = { ...handle, raw: createRawReader(handle.pool) };
 			const recorded = yield* Effect.exit(
-				tryOrOperationError(() => cache.set(key, handles)),
+				Effect.fromResult(tryOrOperationError(() => cache.set(key, handles))),
 			);
 			if (Exit.isFailure(recorded)) {
 				const closed = yield* Effect.exit(handle.destroy());
 				return yield* Effect.failCause(
-					Exit.isFailure(closed) ? Cause.sequential(recorded.cause, closed.cause) : recorded.cause,
+					Exit.isFailure(closed) ? combineCauses(recorded.cause, closed.cause) : recorded.cause,
 				);
 			}
 			return handles;
@@ -337,13 +338,13 @@ function createDbOptions(source: TenantSource, pool: TenantPoolOptions = {}): Cr
 }
 
 // Weak keys keep per-cache coordination from retaining a consumer's discarded cache.
-const cacheLocks = new WeakMap<TenantDbCache, Effect.Semaphore>();
+const cacheLocks = new WeakMap<TenantDbCache, Semaphore.Semaphore>();
 
 function withTenantDbCacheLock<A>(cache: TenantDbCache, work: Effect.Effect<A, Error>): Effect.Effect<A, Error> {
 	return Effect.suspend(() => {
 		let lock = cacheLocks.get(cache);
 		if (lock === undefined) {
-			lock = Effect.unsafeMakeSemaphore(1);
+			lock = Semaphore.makeUnsafe(1);
 			cacheLocks.set(cache, lock);
 		}
 		return lock.withPermits(1)(Effect.uninterruptible(work));
@@ -401,10 +402,10 @@ export function destroyTenantDb(
 					),
 				);
 				for (const key of keys) {
-					const handles = yield* tryOrOperationError(() => cache.get(key));
+					const handles = yield* Effect.fromResult(tryOrOperationError(() => cache.get(key)));
 					if (handles !== undefined) {
 						yield* handles.destroy();
-						yield* tryOrOperationError(() => cache.delete(key));
+						yield* Effect.fromResult(tryOrOperationError(() => cache.delete(key)));
 					}
 				}
 			}),
@@ -426,7 +427,7 @@ export function destroyAllTenantDbs(cache: TenantDbCache = moduleCache): Effect.
 		withTenantDbCacheLock(
 			cache,
 			Effect.gen(function* () {
-				const open = yield* tryOrOperationError(() => [...cache.entries()]);
+				const open = yield* Effect.fromResult(tryOrOperationError(() => [...cache.entries()]));
 				let failures: Cause.Cause<Error> = Cause.empty;
 
 				// Attempt every pool. Delete only successfully closed handles, so failed
@@ -434,13 +435,13 @@ export function destroyAllTenantDbs(cache: TenantDbCache = moduleCache): Effect.
 				for (const [key, handles] of open) {
 					const closed = yield* Effect.exit(Effect.gen(function* () {
 						yield* handles.destroy();
-						yield* tryOrOperationError(() => cache.delete(key));
+						yield* Effect.fromResult(tryOrOperationError(() => cache.delete(key)));
 					}));
 					if (Exit.isFailure(closed)) {
-						failures = Cause.sequential(failures, closed.cause);
+						failures = combineCauses(failures, closed.cause);
 					}
 				}
-				if (!Cause.isEmpty(failures)) {
+				if (!causeIsEmpty(failures)) {
 					return yield* Effect.failCause(failures);
 				}
 			}),

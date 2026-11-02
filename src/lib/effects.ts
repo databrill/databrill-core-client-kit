@@ -1,4 +1,4 @@
-import { Effect, Either } from "effect";
+import { Effect, Result } from "effect";
 
 /** Keep foreign errors intact, including their original causes. */
 export function operationError(cause: unknown): Error {
@@ -6,8 +6,8 @@ export function operationError(cause: unknown): Error {
 }
 
 /** Run synchronous work, preserving foreign errors and their causes. */
-export function tryOrOperationError<A>(fn: () => A): Either.Either<A, Error> {
-	return Either.try({ try: fn, catch: operationError });
+export function tryOrOperationError<A>(fn: () => A): Result.Result<A, Error> {
+	return Result.try({ try: fn, catch: operationError });
 }
 
 /** Run Promise work, preserving foreign errors and their causes. */

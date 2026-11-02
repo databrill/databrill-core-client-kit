@@ -37,15 +37,16 @@
  * and report that none is configured for a repo whose config is in its root.
  */
 
-import { CliConfig, Command, HelpDoc, Options, ValidationError } from "@effect/cli";
-import { Cause, Effect, Either, Exit } from "effect";
+import { CliError, Command, Flag } from "effect/cli";
+import { Effect, Exit, Option, Result } from "effect";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import process from "node:process";
+import { failureOf, formatCause, runEffectPromiseExit } from "../lib/effectCompat.ts";
 import { operationError, tryOrOperationError, tryPromiseOrOperationError } from "../lib/effects.ts";
 import { parseCatalog, seedCatalog } from "../lib/seedCatalog.ts";
 import { acquireTenantDbCache } from "../lib/acquireTenantDbCache.ts";
-import { runCommand } from "./runCommand.ts";
+import { renderHelp, runCommand } from "./runCommand.ts";
 import { openWorkspace, resolveWsid } from "./workspaceTarget.ts";
 
 /**
@@ -57,10 +58,10 @@ import { openWorkspace, resolveWsid } from "./workspaceTarget.ts";
  * prevents a valid seed from overwriting another workspace's configuration.
  * A seed may omit `wsid`; the command still requires an explicit target.
  */
-function assertSeedWsid(seedWsid: string | null, resolved: string, path: string): Either.Either<void, Error> {
-	return Either.gen(function* () {
+function assertSeedWsid(seedWsid: string | null, resolved: string, path: string): Result.Result<void, Error> {
+	return Result.gen(function* () {
 		if (seedWsid !== null && seedWsid !== resolved) {
-			return yield* Either.left(
+			return yield* Result.fail(
 				new Error(
 					`${path} declares "wsid": ${JSON.stringify(seedWsid)}, but this run resolved workspace ` +
 						`${resolved}. Pass --wsid ${seedWsid} to write the workspace the seed names, or correct ` +
@@ -84,19 +85,13 @@ export function seedPath(
 	brand: string | undefined,
 	file: string | undefined,
 	rootDir: string,
-): Either.Either<string, Error> {
-	return Either.gen(function* () {
+): Result.Result<string, Error> {
+	return Result.gen(function* () {
 		if (file !== undefined && file !== "") {
 			return isAbsolute(file) ? file : resolve(rootDir, file);
 		}
 		if (brand === undefined || brand === "") {
-			return yield* Either.left(
-				new Error(
-					`Pass --brand <slug> or --file <path>.\n\n${
-						HelpDoc.toAnsiText(Command.getHelp(seedCatalogCommand(), CliConfig.defaultConfig))
-					}`,
-				),
-			);
+			return yield* Result.fail(new Error("Pass --brand <slug> or --file <path>."));
 		}
 		return join(rootDir, "brands", brand, "catalog.json");
 	});
@@ -104,62 +99,73 @@ export function seedPath(
 
 function seedCatalogCommand() {
 	return Command.make("seedCatalog.ts", {
-		brand: Options.text("brand").pipe(
-			Options.withDefault(undefined),
-			Options.withDescription("Read <root>/brands/<slug>/catalog.json."),
+		brand: Flag.String("brand").pipe(
+			Flag.withDefault(undefined),
+			Flag.withDescription("Read <root>/brands/<slug>/catalog.json."),
 		),
-		file: Options.text("file").pipe(
-			Options.withDefault(undefined),
-			Options.withDescription("Read this seed file; otherwise use --brand."),
+		file: Flag.String("file").pipe(
+			Flag.withDefault(undefined),
+			Flag.withDescription("Read this seed file; otherwise use --brand."),
 		),
-		wsid: Options.text("wsid").pipe(Options.withDescription("The workspace to write (required).")),
-		root: Options.text("root").pipe(
-			Options.withDefault(undefined),
-			Options.withDescription("Where brands/ and databrill.config.json are looked for (default: cwd)."),
+		wsid: Flag.String("wsid").pipe(Flag.withDescription("The workspace to write (required).")),
+		root: Flag.String("root").pipe(
+			Flag.withDefault(undefined),
+			Flag.withDescription("Where brands/ and databrill.config.json are looked for (default: cwd)."),
 		),
-		check: Options.boolean("check").pipe(Options.withDescription("Validate the seed and write nothing.")),
-		dryRun: Options.boolean("dry-run").pipe(
-			Options.withDescription("Same as --check: validate and write nothing."),
+		check: Flag.Boolean("check").pipe(
+			Flag.withDefault(false),
+			Flag.withDescription("Validate the seed and write nothing."),
+		),
+		dryRun: Flag.Boolean("dry-run").pipe(
+			Flag.withDefault(false),
+			Flag.withDescription("Same as --check: validate and write nothing."),
 		),
 	}, (flags): Effect.Effect<void, Error> =>
 		Effect.gen(function* () {
 			const cache = yield* acquireTenantDbCache();
-			const wsid = yield* resolveWsid(flags.wsid);
+			const wsid = yield* Effect.fromResult(resolveWsid(flags.wsid));
 
-			const rootDir = yield* tryOrOperationError(() => resolve(flags.root ?? process.cwd()));
-			const path = yield* seedPath(flags.brand, flags.file, rootDir);
+			const rootDir = yield* Effect.fromResult(tryOrOperationError(() => resolve(flags.root ?? process.cwd())));
+			const path = yield* Effect.fromResult(seedPath(flags.brand, flags.file, rootDir)).pipe(
+				Effect.catch((error) =>
+					Effect.flatMap(
+						renderHelp(seedCatalogCommand()),
+						(help) => Effect.fail(new Error(`${error.message}\n\n${help}`, { cause: error })),
+					)
+				),
+			);
 			const text = yield* tryPromiseOrOperationError(() => readFile(path, "utf8"));
 			const raw: unknown = yield* Effect.try({
 				try: () => JSON.parse(text),
 				catch: (cause) => new Error(`${path} is not valid JSON: ${operationError(cause).message}`, { cause }),
 			});
-			const seed = yield* parseCatalog(raw, { source: path });
+			const seed = yield* Effect.fromResult(parseCatalog(raw, { source: path }));
 
 			if (flags.check || flags.dryRun) {
 				// Resolved even in --check, because "which workspace would this have
 				// written?" is half of what a reader wants confirmed before a real run.
-				yield* assertSeedWsid(seed.wsid, wsid, path);
-				yield* tryOrOperationError(() =>
+				yield* Effect.fromResult(assertSeedWsid(seed.wsid, wsid, path));
+				yield* Effect.fromResult(tryOrOperationError(() =>
 					console.log(
 						`${path} is valid: ${seed.properties.length} properties, ${seed.categories.length} categories, ` +
 							`${seed.variants.length} variants, ${seed.families.length} families, ${seed.asins.length} ASINs, ` +
 							`${seed.attributes.length} attributes. ` +
 							`Nothing written (--check); a real run would write workspace ${wsid}.`,
 					)
-				);
+				));
 				return;
 			}
 
-			yield* assertSeedWsid(seed.wsid, wsid, path);
+			yield* Effect.fromResult(assertSeedWsid(seed.wsid, wsid, path));
 			const { schema, handles } = yield* openWorkspace(wsid, { rootDir }, { cache });
 			const written = yield* seedCatalog(handles.write, seed);
-			yield* tryOrOperationError(() =>
+			yield* Effect.fromResult(tryOrOperationError(() =>
 				console.log(
 					`Seeded workspace ${wsid} (schema ${schema}) from ${path}: ${written.properties} properties, ` +
 						`${written.categories} categories, ${written.variants} variants, ${written.families} families, ` +
 						`${written.asins} ASINs, ${written.attributes} attributes.`,
 				)
-			);
+			));
 			return;
 		}).pipe(Effect.scoped)).pipe(
 			Command.withDescription("Write a brand configuration into a workspace. Pass --brand or --file."),
@@ -174,21 +180,21 @@ function seedCatalogCommand() {
  * is opened, which is what lets those cases be covered with no database and no
  * `net` permission.
  */
-export function main(args: readonly string[]): Effect.Effect<number, Error | ValidationError.ValidationError> {
-	return runCommand("seedCatalog.ts", seedCatalogCommand(), args);
+export function main(args: readonly string[]): Effect.Effect<number, Error | CliError.CliError> {
+	return runCommand(seedCatalogCommand(), args);
 }
 
 if (import.meta.main) {
-	const result = await Effect.runPromiseExit(main(process.argv.slice(2)));
+	const result = await runEffectPromiseExit(main(process.argv.slice(2)));
 	if (Exit.isFailure(result)) {
 		// Effect CLI already prints argument-validation errors.
-		if (result.cause._tag === "Fail") {
-			const error = result.cause.error;
-			if (!ValidationError.isValidationError(error)) {
-				console.error(error.message);
+		const failure = failureOf(result);
+		if (Option.isSome(failure)) {
+			if (!CliError.isCliError(failure.value)) {
+				console.error(failure.value.message);
 			}
 		} else {
-			console.error(Cause.pretty(result.cause));
+			console.error(formatCause(result.cause));
 		}
 		process.exit(1);
 	}

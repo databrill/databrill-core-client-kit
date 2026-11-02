@@ -28,7 +28,7 @@
 
 export type SupabasePoolerRewriteMode = "direct" | "transaction";
 
-export interface SupabasePoolerRewriteResult {
+interface SupabasePoolerRewriteResult {
 	readonly uri: string;
 	/** True when the URI matched the session-pooler shape and was rewritten. */
 	readonly rewritten: boolean;

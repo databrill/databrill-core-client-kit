@@ -31,7 +31,7 @@
  * under `src/` is a line the consumer has to carry:
  *
  * - `@databrill/core-pg-kysely` — database handles
- * - `effect` — Effect 3.21.2
+ * - `effect` — Effect 4.0.6
  *
  * A Bun or Node consumer has no import map and carries the same packages in its
  * `package.json`; `../README.md` § "Bun and Node consumers" lists them.
@@ -42,12 +42,12 @@
  * `../tests/unit/boundaryScan.test.ts` derives allowed dependencies from the
  * import map and prevents an undeclared driver from entering `src/`.
  *
- * `@effect/cli`, `@effect/platform` and `@effect/platform-node` are CLI-only
- * dependencies declared in this package's `deno.json`. Nothing reachable from
- * this file imports them. A command run as
- * `deno run -A extern/…/src/cli/query.ts` uses this package's manifest. A consumer
- * importing a file under `./cli/` directly must declare those dependencies in
- * its own import map; the library exports below do not require them.
+ * `@effect/platform-node` is a CLI-only dependency declared in this package's
+ * `deno.json`; the commands take their parser from `effect/cli`, which is part of
+ * `effect`. Nothing reachable from this file imports `@effect/platform-node`. A
+ * command run as `deno run -A extern/…/src/cli/query.ts` uses this package's
+ * manifest. A consumer importing a file under `./cli/` directly must declare that
+ * dependency in its own import map; the library exports below do not require it.
  *
  * @module
  */
