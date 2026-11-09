@@ -1,22 +1,22 @@
 {
   "version": "5",
   "specifiers": {
-    "npm:@effect/platform-node-shared@4.0.6": "4.0.6_effect@4.0.6",
-    "npm:@effect/platform-node@4.0.6": "4.0.6_effect@4.0.6_redis@6.3.1",
-    "npm:@jsr/databrill__core-pg-kysely@~0.1.18": "0.1.18",
-    "npm:effect@4.0.6": "4.0.6"
+    "npm:@effect/platform-node-shared@4.1.2": "4.1.2_effect@4.1.2",
+    "npm:@effect/platform-node@4.1.2": "4.1.2_effect@4.1.2_redis@6.3.1",
+    "npm:@jsr/databrill__core-pg-kysely@~0.1.19": "0.1.19",
+    "npm:effect@4.1.2": "4.1.2"
   },
   "npm": {
-    "@effect/platform-node-shared@4.0.6_effect@4.0.6": {
-      "integrity": "sha512-0PhyC4uG30xGtsajnxjkcBWfTjNRzUh4ZKl1Kvo/MNyCTb+W2O+fBzf7wCRCoqt+nLudiq4V7vX40Q8XIBuMaQ==",
+    "@effect/platform-node-shared@4.1.2_effect@4.1.2": {
+      "integrity": "sha512-wSwl9A/G1hcVvF8nLI+YfB3EyOIDvWS6+lsTZBkmgDnPBL7m8YWZF+1HD+mdEsb52SUGfukip46Q3gRwSdk3QA==",
       "dependencies": [
         "@types/ws",
         "effect",
         "ws"
       ]
     },
-    "@effect/platform-node@4.0.6_effect@4.0.6_redis@6.3.1": {
-      "integrity": "sha512-gXvGHAy0/8PZbWvMMguloDUyeSP+rzYEo3FSEqUuGduxo9ORcGioDxPI+GOLCIFfam7VuNkmSUxBOiRMIrMrBw==",
+    "@effect/platform-node@4.1.2_effect@4.1.2_redis@6.3.1": {
+      "integrity": "sha512-ye0UjxORdd5Qu3paZ1LljgGOALWHt7muP9VTpjUSCNfcesiB/Hm7wPJIvZeu4gnwpTe5BtEnO1VHngWqjJp8mA==",
       "dependencies": [
         "@effect/platform-node-shared",
         "effect",
@@ -24,14 +24,14 @@
         "undici"
       ]
     },
-    "@jsr/databrill__core-pg-kysely@0.1.18": {
-      "integrity": "sha512-QaZ2cxPjLzoe7NgopiSt4zJUNaG7QyCCjofGQsnipihFEIcMAyTJlt5julzfW7Nlm+tTjH+3I6AlQfRCtiP8eQ==",
+    "@jsr/databrill__core-pg-kysely@0.1.19": {
+      "integrity": "sha512-hySWU8q24bHEhuiwCDcMj80EymQFPi910qRsGou11iu36y6BhC6wdQkKnawwP4SMkNw1dFssC8J9Z4errDYXLA==",
       "dependencies": [
         "effect",
         "kysely",
         "pg"
       ],
-      "tarball": "https://npm.jsr.io/~/11/@jsr/databrill__core-pg-kysely/0.1.18.tgz"
+      "tarball": "https://npm.jsr.io/~/11/@jsr/databrill__core-pg-kysely/0.1.19.tgz"
     },
     "@redis/bloom@6.3.1_@redis+client@6.3.1": {
       "integrity": "sha512-dpF9j2yJDoPzSCaZn0MSB3xzmnXQVJeTSAWJcQVcgbmluwhpFeemmII0cF1t+WYfoVS+shEFq79+MmUItgzJLg==",
@@ -72,8 +72,8 @@
         "@types/node"
       ]
     },
-    "effect@4.0.6": {
-      "integrity": "sha512-Tc3mkzuLR6t6P9dhLt0D2GrxYtmU5td4XEJEiXCmILz53IRIfJyHsKZWjTA3xEjiwpNTtXBgI4iqYPxMztBDrw=="
+    "effect@4.1.2": {
+      "integrity": "sha512-d3Oah1WyKxFLFh19yWheS5IXIVaITzxZ71JkE1rkUozq/6EcJSU5nPk5bF2QrSygZ3SQoiNQB8TsxFriyMeMaQ=="
     },
     "kysely@0.29.8": {
       "integrity": "sha512-ixHU1H4R+LeC5Y0nAhYgiGRFpFRHm2DXKEmJSs/vbes9sKXyssyzxzE/NYiOJX5fY0BL28biCre3GqlCqUwyXQ=="
@@ -156,8 +156,8 @@
     "undici-types@8.9.0": {
       "integrity": "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="
     },
-    "undici@8.12.3": {
-      "integrity": "sha512-+fdndUTwBP86cVjihTp21hZHo7d6oj1c/47XPA3lL8mM0XHs+C4EkcjmgRsFnFk2f/UONGDy9ItBItmXsLOQHw=="
+    "undici@8.12.4": {
+      "integrity": "sha512-8Mx+uNKKER2bA4AdtedkqRbwUCIJFr2nJckXRe5yrDqzePqwLP7VNcctN8/XdmDSbF7mS+jJKIszlL+vbam1VA=="
     },
     "ws@8.22.1": {
       "integrity": "sha512-oyL6OPYme/CmiFvNuGzeoxCJ4nOrZE2O1FwM9MWM1AsGri6nLXB2pg+lNA8aLeXMSav0J6eIVS1j6vUPzUtK9g=="
@@ -168,10 +168,10 @@
   },
   "workspace": {
     "dependencies": [
-      "npm:@effect/platform-node-shared@4.0.6",
-      "npm:@effect/platform-node@4.0.6",
-      "npm:@jsr/databrill__core-pg-kysely@~0.1.18",
-      "npm:effect@4.0.6"
+      "npm:@effect/platform-node-shared@4.1.2",
+      "npm:@effect/platform-node@4.1.2",
+      "npm:@jsr/databrill__core-pg-kysely@~0.1.19",
+      "npm:effect@4.1.2"
     ]
   }
 }

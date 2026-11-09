@@ -35,9 +35,9 @@ this package's own `deno.json`.** So every bare specifier under `src/` is a line
 ```jsonc
 {
 	"imports": {
-		"effect": "npm:effect@4.0.6",
+		"effect": "npm:effect@4.1.2",
 		// Needed by everything in this package.
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.18",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.19",
 	},
 }
 ```
@@ -69,21 +69,21 @@ under Bun or Node does not see this package's `deno.json`:
 ```jsonc
 {
 	"dependencies": {
-		"effect": "4.0.6",
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.18",
+		"effect": "4.1.2",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.19",
 		// Only to run the commands, or to import a file under src/cli/.
-		"@effect/platform-node": "4.0.6",
+		"@effect/platform-node": "4.1.2",
 	},
 }
 ```
 
 `@databrill/core-pg-kysely` comes from JSR's npm registry, so add `@jsr:registry=https://npm.jsr.io` to your
-`.npmrc`. It depends on `kysely` (`^0.29.7`) and `pg` (`^8.23.1`) itself, so neither needs a line of its own;
+`.npmrc`. It depends on `kysely` (`^0.29.8`) and `pg` (`^8.23.1`) itself, so neither needs a line of its own;
 list them only if your own code imports them. Keep one copy of `effect`: a version your package manager can
-share with `@databrill/core-pg-kysely`'s `4.0.6` pin. The `@effect/*` versions are the ones this package is
+share with `@databrill/core-pg-kysely`'s `4.1.2` pin. The `@effect/*` versions are the ones this package is
 tested with; a newer patch release of each works.
 
-`@databrill/core-pg-kysely` needs a `Temporal` global. Bun has one. Node does not, so add
+`@databrill/core-pg-kysely` needs a `Temporal` global. Bun and Node 26 have one. Node 22 and 24 do not, so add
 `temporal-polyfill` and load it before anything connects: `import "temporal-polyfill/global"` in your own
 code, or `node --import temporal-polyfill/global` for a command. `--help` and `--check` open no connection and
 work without it.

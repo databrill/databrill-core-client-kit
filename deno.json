@@ -1,4 +1,7 @@
 {
+	"exclude": [
+		"tmp/"
+	],
 	"minimumDependencyAge": {
 		"age": "P1D",
 		"exclude": [
@@ -6,10 +9,10 @@
 		]
 	},
 	"imports": {
-		"effect": "npm:effect@4.0.6",
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.18",
-		"@effect/platform-node": "npm:@effect/platform-node@4.0.6",
-		"@effect/platform-node-shared": "npm:@effect/platform-node-shared@4.0.6"
+		"effect": "npm:effect@4.1.2",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.19",
+		"@effect/platform-node": "npm:@effect/platform-node@4.1.2",
+		"@effect/platform-node-shared": "npm:@effect/platform-node-shared@4.1.2"
 	},
 	"tasks": {
 		"fmt": "deno fmt",

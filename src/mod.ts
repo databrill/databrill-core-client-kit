@@ -31,7 +31,7 @@
  * under `src/` is a line the consumer has to carry:
  *
  * - `@databrill/core-pg-kysely` — database handles
- * - `effect` — Effect 4.0.6
+ * - `effect` — Effect 4.1.2
  *
  * A Bun or Node consumer has no import map and carries the same packages in its
  * `package.json`; `../README.md` § "Bun and Node consumers" lists them.
