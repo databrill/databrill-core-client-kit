@@ -19,11 +19,13 @@
  *     }
  *   }
  *
- * This file is canonical HERE and symlinked into `mcp-local/src/config.ts` and
- * `client-kit/src/lib/config.ts`. Both packages use this parser so a wsid
- * resolves to the same database in either package. Edit this one; there is no copy step. The symlinks are pinned by
- * `services/tests/unit/mcpSharedSourceSymlinks.test.ts` and
- * `client-kit/tests/unit/packageSymlinks.test.ts`.
+ * This file is canonical HERE and symlinked into `mcp-local/src/config.ts`,
+ * `client-kit/src/lib/config.ts` and `agent-plugin/scripts/lib/config.ts`. All
+ * three packages use this parser so a wsid resolves to the same database in
+ * each. Edit this one; there is no copy step. The symlinks are pinned by
+ * `services/tests/unit/mcpSharedSourceSymlinks.test.ts`,
+ * `client-kit/tests/unit/packageSymlinks.test.ts` and
+ * `agent-plugin/tests/unit/packageSymlinks.test.ts`.
  *
  * Consequences, both enforced by those packages' boundary scans, which read
  * THROUGH the symlinks:
@@ -165,10 +167,16 @@ export function workspaceHasFeature(workspace: DirectoryWorkspace, feature: stri
 /**
  * Load the workspace config from an explicit path or `DATABRILL_CONFIG`, returning
  * `null` when neither is set. Frontends that require routing must reject that null.
+ * Relative paths try cwd first, then `options.rootDir` when supplied. Only a
+ * missing file permits fallback; any other read failure, and readable invalid
+ * content, fails immediately.
  * Fails on a malformed file so a bad config fails at startup rather than
  * mid-request.
  */
-export function loadConfig(configPath?: string): Effect.Effect<Config | null, Error> {
+export function loadConfig(
+	configPath?: string,
+	options: { readonly rootDir?: string } = {},
+): Effect.Effect<Config | null, Error> {
 	return Effect.gen(function* () {
 		const path = yield* Effect.try({
 			try: () => configPath ?? process.env["DATABRILL_CONFIG"],
@@ -178,14 +186,32 @@ export function loadConfig(configPath?: string): Effect.Effect<Config | null, Er
 			return null;
 		}
 
-		const abs = yield* Effect.try({
-			try: () => isAbsolute(path) ? path : resolvePath(process.cwd(), path),
+		const paths = yield* Effect.try({
+			try: () => resolveConfigPaths({ value: path, cwd: () => process.cwd(), rootDir: options.rootDir }),
 			catch: (cause) => new Error("DATABRILL_CONFIG: cannot resolve path", { cause }),
 		});
-		const text = yield* Effect.tryPromise({
-			try: (signal) => readFile(abs, { encoding: "utf8", signal }),
-			catch: (cause) => new Error(`DATABRILL_CONFIG: cannot read ${abs}`, { cause }),
-		});
+		let loaded: { readonly path: string; readonly text: string } | undefined;
+		let readError: Error | undefined;
+		for (const candidate of paths) {
+			const read = yield* Effect.result(Effect.tryPromise({
+				try: (signal) => readFile(candidate, { encoding: "utf8", signal }),
+				catch: (cause) => new Error(`DATABRILL_CONFIG: cannot read ${candidate}`, { cause }),
+			}));
+			if (Result.isSuccess(read)) {
+				loaded = { path: candidate, text: read.success };
+				break;
+			}
+			if (!isMissingFile(read.failure.cause)) {
+				return yield* Effect.fail(read.failure);
+			}
+			readError = read.failure;
+		}
+		if (loaded === undefined) {
+			return yield* Effect.fail(
+				new Error(`DATABRILL_CONFIG: cannot read ${paths.join(" or ")}`, { cause: readError?.cause }),
+			);
+		}
+		const { path: abs, text } = loaded;
 
 		const expanded = yield* Effect.fromResult(expandEnv(text));
 		const parsed: unknown = yield* Effect.try({
@@ -195,6 +221,31 @@ export function loadConfig(configPath?: string): Effect.Effect<Config | null, Er
 
 		return yield* Effect.fromResult(build(parsed, abs));
 	});
+}
+
+/**
+ * Resolve the ordered config candidates without reading files. An absolute value is the only
+ * candidate, and `cwd` is called only for a relative one.
+ */
+export function resolveConfigPaths(input: {
+	readonly value: string;
+	readonly cwd: () => string;
+	readonly rootDir?: string;
+}): readonly string[] {
+	if (isAbsolute(input.value)) {
+		return [input.value];
+	}
+	const cwdPath = resolvePath(input.cwd(), input.value);
+	if (input.rootDir === undefined) {
+		return [cwdPath];
+	}
+	const rootPath = resolvePath(input.rootDir, input.value);
+	return cwdPath === rootPath ? [cwdPath] : [cwdPath, rootPath];
+}
+
+/** The read failed because nothing is at the path, the one failure that lets the next candidate be tried. */
+function isMissingFile(cause: unknown): boolean {
+	return isRecord(cause) && (cause["code"] === "ENOENT" || cause["code"] === "ENOTDIR");
 }
 
 function invalidConfig(source: string, message: string): Result.Result<never, Error> {
