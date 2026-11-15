@@ -37,10 +37,12 @@ export const MARKETPLACE_ID_BE = "AMEN7PMS3EDWL";
 export const MARKETPLACE_ID_BR = "A2Q3Y263D00KWC";
 export const MARKETPLACE_ID_CA = "A2EUQ1WTGCTBG2";
 export const MARKETPLACE_ID_DE = "A1PA6795UKMFR9";
+export const MARKETPLACE_ID_EG = "ARBP9OOSHTCHU";
 export const MARKETPLACE_ID_ES = "A1RKKUPIHCS9HS";
 export const MARKETPLACE_ID_FR = "A13V1IB3VIYZZH";
 export const MARKETPLACE_ID_GB = "A1F83G8C2ARO7P";
 export const MARKETPLACE_ID_IE = "A28R8C7NBKEWEA";
+export const MARKETPLACE_ID_IN = "A21TJRUUN4KGV";
 export const MARKETPLACE_ID_IT = "APJ6JRA9NG5V4";
 export const MARKETPLACE_ID_JP = "A1VC38T7YXB528";
 export const MARKETPLACE_ID_MX = "A1AM78C64UM0Y8";
@@ -48,8 +50,10 @@ export const MARKETPLACE_ID_NL = "A1805IZSGTT6HS";
 export const MARKETPLACE_ID_PL = "A1C3SOZRARQ6R3";
 export const MARKETPLACE_ID_SA = "A17E79C6D8DWNP";
 export const MARKETPLACE_ID_SE = "A2NODRKZP88ZB9";
+export const MARKETPLACE_ID_SG = "A19VAU5U5O7RUS";
 export const MARKETPLACE_ID_TR = "A33AVAJ2PDY3EV";
 export const MARKETPLACE_ID_US = "ATVPDKIKX0DER";
+export const MARKETPLACE_ID_ZA = "AE08WJ6YKNBMC";
 
 export const regionInfoMap: { readonly [region in AmazonRegion]: AmazonRegionInfo } = {
 	EU: {
@@ -155,6 +159,18 @@ export const marketplaceInfos: readonly AmazonMarketplaceInfo[] = [
 		regionInfo: regionInfoMap["EU"]!,
 	},
 	{
+		countryCode: "EG",
+		marketplaceId: MARKETPLACE_ID_EG,
+		countryName: "Egypt",
+		timeZone: "Africa/Cairo",
+		defaultCurrencyCode: "EGP",
+		// No connected seller participates here yet, so this is not a getMarketplaceParticipations value.
+		defaultLanguageCode: "en_AE",
+		domainName: "www.amazon.eg",
+		region: "EU",
+		regionInfo: regionInfoMap["EU"]!,
+	},
+	{
 		countryCode: "ES",
 		marketplaceId: MARKETPLACE_ID_ES,
 		countryName: "Spain",
@@ -184,6 +200,18 @@ export const marketplaceInfos: readonly AmazonMarketplaceInfo[] = [
 		defaultCurrencyCode: "EUR",
 		defaultLanguageCode: "en_IE",
 		domainName: "www.amazon.ie",
+		region: "EU",
+		regionInfo: regionInfoMap["EU"]!,
+	},
+	{
+		countryCode: "IN",
+		marketplaceId: MARKETPLACE_ID_IN,
+		countryName: "India",
+		timeZone: "Asia/Kolkata",
+		defaultCurrencyCode: "INR",
+		// No connected seller participates here yet, so this is not a getMarketplaceParticipations value.
+		defaultLanguageCode: "en_IN",
+		domainName: "www.amazon.in",
 		region: "EU",
 		regionInfo: regionInfoMap["EU"]!,
 	},
@@ -269,6 +297,18 @@ export const marketplaceInfos: readonly AmazonMarketplaceInfo[] = [
 		regionInfo: regionInfoMap["EU"]!,
 	},
 	{
+		countryCode: "SG",
+		marketplaceId: MARKETPLACE_ID_SG,
+		countryName: "Singapore",
+		timeZone: "Asia/Singapore",
+		defaultCurrencyCode: "SGD",
+		// No connected seller participates here yet, so this is not a getMarketplaceParticipations value.
+		defaultLanguageCode: "en_SG",
+		domainName: "www.amazon.sg",
+		region: "FE",
+		regionInfo: regionInfoMap["FE"]!,
+	},
+	{
 		countryCode: "TR",
 		marketplaceId: MARKETPLACE_ID_TR,
 		countryName: "Turkey",
@@ -312,6 +352,18 @@ export const marketplaceInfos: readonly AmazonMarketplaceInfo[] = [
 		region: "NA",
 		regionInfo: regionInfoMap["NA"]!,
 	},
+	{
+		countryCode: "ZA",
+		marketplaceId: MARKETPLACE_ID_ZA,
+		countryName: "South Africa",
+		timeZone: "Africa/Johannesburg",
+		defaultCurrencyCode: "ZAR",
+		// No connected seller participates here yet, so this is not a getMarketplaceParticipations value.
+		defaultLanguageCode: "en_ZA",
+		domainName: "www.amazon.co.za",
+		region: "EU",
+		regionInfo: regionInfoMap["EU"]!,
+	},
 ];
 
 /**
@@ -331,10 +383,12 @@ export const AMAZON_COUNTRY_CODES = [
 	"BR",
 	"CA",
 	"DE",
+	"EG",
 	"ES",
 	"FR",
 	"GB",
 	"IE",
+	"IN",
 	"IT",
 	"JP",
 	"MX",
@@ -342,8 +396,10 @@ export const AMAZON_COUNTRY_CODES = [
 	"PL",
 	"SA",
 	"SE",
+	"SG",
 	"TR",
 	"US",
+	"ZA",
 ] as const;
 
 export type AmazonCountryCode = typeof AMAZON_COUNTRY_CODES[number];

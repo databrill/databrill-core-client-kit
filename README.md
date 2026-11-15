@@ -37,7 +37,7 @@ this package's own `deno.json`.** So every bare specifier under `src/` is a line
 	"imports": {
 		"effect": "npm:effect@4.1.2",
 		// Needed by everything in this package.
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.20",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.21",
 	},
 }
 ```
@@ -70,7 +70,7 @@ under Bun or Node does not see this package's `deno.json`:
 {
 	"dependencies": {
 		"effect": "4.1.2",
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.20",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.21",
 		// Only to run the commands, or to import a file under src/cli/.
 		"@effect/platform-node": "4.1.2",
 	},
