@@ -35,9 +35,9 @@ this package's own `deno.json`.** So every bare specifier under `src/` is a line
 ```jsonc
 {
 	"imports": {
-		"effect": "npm:effect@4.1.2",
+		"effect": "npm:effect@4.1.4",
 		// Needed by everything in this package.
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.22",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.23",
 	},
 }
 ```
@@ -69,10 +69,10 @@ under Bun or Node does not see this package's `deno.json`:
 ```jsonc
 {
 	"dependencies": {
-		"effect": "4.1.2",
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.22",
+		"effect": "4.1.4",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.23",
 		// Only to run the commands, or to import a file under src/cli/.
-		"@effect/platform-node": "4.1.2",
+		"@effect/platform-node": "4.1.4",
 	},
 }
 ```
@@ -80,7 +80,7 @@ under Bun or Node does not see this package's `deno.json`:
 `@databrill/core-pg-kysely` comes from JSR's npm registry, so add `@jsr:registry=https://npm.jsr.io` to your
 `.npmrc`. It depends on `kysely` (`^0.29.8`) and `pg` (`^8.23.1`) itself, so neither needs a line of its own;
 list them only if your own code imports them. Keep one copy of `effect`: a version your package manager can
-share with `@databrill/core-pg-kysely`'s `4.1.2` pin. The `@effect/*` versions are the ones this package is
+share with `@databrill/core-pg-kysely`'s `4.1.4` pin. The `@effect/*` versions are the ones this package is
 tested with; a newer patch release of each works.
 
 `@databrill/core-pg-kysely` needs a `Temporal` global. Bun and Node 26 have one. Node 22 and 24 do not, so add
@@ -457,7 +457,7 @@ active statement to finish, then rolls back before releasing its pool; this does
 server-side query cancellation. Both commands use `effect/cli` with Effect handlers, so failures and
 interruption stay in the same Effect runtime. Generated help follows `effect/cli`'s layout, and `--version` reports
 `unversioned`, because the client kit is pinned by Git commit. SQL positional tokens beginning with a
-dash are refused as unknown options; use `--file` for SQL that starts with a dash.
+dash, other than negative numbers, are refused as unknown options; use `--file` for SQL that starts with a dash.
 
 ## TLS: your connection string must say what it wants
 
