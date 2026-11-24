@@ -19,31 +19,32 @@
  *     }
  *   }
  *
- * This file is canonical HERE and symlinked into `mcp-local/src/config.ts`,
- * `client-kit/src/lib/config.ts` and `agent-plugin/scripts/lib/config.ts`. All
+ * This file is canonical HERE and symlinked into `mcp-local/src/workspaceRegistry.ts`,
+ * `client-kit/src/lib/workspaceRegistry.ts` and `agent-plugin/scripts/lib/workspaceRegistry.ts`. All
  * three packages use this parser so a wsid resolves to the same database in
  * each. Edit this one; there is no copy step. The symlinks are pinned by
  * `services/tests/unit/mcpSharedSourceSymlinks.test.ts`,
  * `client-kit/tests/unit/packageSymlinks.test.ts` and
  * `agent-plugin/tests/unit/packageSymlinks.test.ts`.
  *
- * Consequences, both enforced by those packages' boundary scans, which read
- * THROUGH the symlinks:
+ * Consequences for every consumer. The MCP and client-kit boundary scans read
+ * THROUGH the symlinks and enforce these import constraints:
  *
- *   - It imports `effect`, `node:` builtins and its sibling
- *     `./amazonConstants.ts`. Every third-party import here
+ *   - It imports `effect`, `node:` builtins and its siblings
+ *     `./amazonConstants.ts` and `./effectCompat.ts`. Every third-party import here
  *     becomes a line every consumer of those packages must carry, and
  *     `client-kit` is consumed as a git submodule whose files resolve against
  *     the CONSUMER's import map.
  *   - It has to live in this directory specifically, beside
- *     `amazonConstants.ts`, because it reaches it relatively. Moving either one
+ *     `amazonConstants.ts` and `effectCompat.ts`, because it reaches them relatively. Moving one
  *     alone breaks the canonical copy, not just the links.
  */
 
-import { Effect, Result } from "effect";
+import { Config as EffectConfig, Effect, Option, Result, Schema } from "effect";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { canonicalCountryCode, countryCodeToMarketplaceInfo } from "./amazonConstants.ts";
+import { formatSchemaError } from "./effectCompat.ts";
 
 export interface WorkspaceDatabase {
 	readonly postgresUrl: string;
@@ -114,51 +115,28 @@ export interface WorkspaceDirectory {
 	readonly byMerchant: ReadonlyMap<string, string>;
 }
 
-/** Replace every `${VAR}` with `process.env.VAR`, collecting any that are unset. */
-function expandEnv(raw: string): Result.Result<string, Error> {
-	return Result.gen(function* () {
-		const missing = new Set<string>();
-		const out = yield* Result.try({
-			try: () =>
-				raw.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, name: string) => {
-					const val = process.env[name];
-					if (val === undefined || val === "") {
-						missing.add(name);
-						return "";
-					}
-					return val;
+const RegistryInputSchema = Schema.Struct({
+	workspaces: Schema.Record(
+		Schema.String,
+		Schema.Struct({
+			label: Schema.optional(Schema.Unknown),
+			database: Schema.Struct({
+				postgresUrl: Schema.NonEmptyString,
+				schema: Schema.optional(Schema.Unknown),
+			}),
+			merchants: Schema.Record(
+				Schema.String,
+				Schema.Struct({
+					name: Schema.optional(Schema.Unknown),
+					countries: Schema.Array(Schema.String).check(Schema.isMinLength(1)),
 				}),
-			catch: (cause) => new Error("DATABRILL_CONFIG: cannot read environment", { cause }),
-		});
-		if (missing.size > 0) {
-			return yield* Result.fail(
-				new Error(
-					`DATABRILL_CONFIG references undefined environment variable(s): ${[...missing].join(", ")}`,
-				),
-			);
-		}
-		return out;
-	});
-}
+			),
+			features: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
+		}),
+	).check(Schema.isMinProperties(1)),
+});
 
-function parseFeatures(raw: unknown, source: string): Result.Result<WorkspaceFeatures, Error> {
-	return Result.gen(function* () {
-		if (raw === undefined) {
-			return {};
-		}
-		if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-			return yield* invalidConfig(source, '"features" must be an object of boolean flags');
-		}
-		const features: Record<string, boolean> = {};
-		for (const [name, enabled] of Object.entries(raw)) {
-			if (typeof enabled !== "boolean") {
-				return yield* invalidConfig(source, `feature "${name}" must be boolean`);
-			}
-			features[name] = enabled;
-		}
-		return features;
-	});
-}
+type RegistryInput = typeof RegistryInputSchema.Type;
 
 export function workspaceHasFeature(workspace: DirectoryWorkspace, feature: string): boolean {
 	return workspace.features?.[feature] === true;
@@ -172,16 +150,15 @@ export function workspaceHasFeature(workspace: DirectoryWorkspace, feature: stri
  * content, fails immediately.
  * Fails on a malformed file so a bad config fails at startup rather than
  * mid-request.
+ * Environment selection and placeholders use the caller's ConfigProvider;
+ * executable callers use the shared run helpers for environment-backed Config.
  */
 export function loadConfig(
 	configPath?: string,
 	options: { readonly rootDir?: string } = {},
 ): Effect.Effect<Config | null, Error> {
 	return Effect.gen(function* () {
-		const path = yield* Effect.try({
-			try: () => configPath ?? process.env["DATABRILL_CONFIG"],
-			catch: (cause) => new Error("DATABRILL_CONFIG: cannot read environment", { cause }),
-		});
+		const path = configPath ?? (yield* readConfigVariable("DATABRILL_CONFIG"));
 		if (!path) {
 			return null;
 		}
@@ -213,13 +190,53 @@ export function loadConfig(
 		}
 		const { path: abs, text } = loaded;
 
-		const expanded = yield* Effect.fromResult(expandEnv(text));
-		const parsed: unknown = yield* Effect.try({
-			try: () => JSON.parse(expanded),
-			catch: (cause) => new Error(`DATABRILL_CONFIG: invalid JSON in ${abs}`, { cause }),
-		});
+		const expanded = yield* expandEnv(text);
+		const parsed = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(RegistryInputSchema))(expanded).pipe(
+			Effect.mapError((cause) => new Error(`DATABRILL_CONFIG (${abs}): ${formatSchemaError(cause)}`, { cause })),
+		);
 
 		return yield* Effect.fromResult(build(parsed, abs));
+	});
+}
+
+/** Read one variable through the caller's ConfigProvider, preserving missing and empty values separately. */
+function readConfigVariable(name: string): Effect.Effect<string | undefined, Error> {
+	return EffectConfig.String(name).pipe(
+		EffectConfig.option,
+		Effect.map(Option.getOrUndefined),
+		Effect.mapError((cause) => new Error(`DATABRILL_CONFIG: cannot read environment variable ${name}`, { cause })),
+	);
+}
+
+/** Expand raw JSON text once, collecting every distinct unset or empty placeholder in its original order. */
+function expandEnv(raw: string): Effect.Effect<string, Error> {
+	return Effect.gen(function* () {
+		const placeholder = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+		const names = new Set<string>();
+		for (const match of raw.matchAll(placeholder)) {
+			const name = match[1];
+			if (name !== undefined) {
+				names.add(name);
+			}
+		}
+		const values = new Map<string, string>();
+		const missing: string[] = [];
+		for (const name of names) {
+			const value = yield* readConfigVariable(name);
+			if (value === undefined || value === "") {
+				missing.push(name);
+			} else {
+				values.set(name, value);
+			}
+		}
+		if (missing.length > 0) {
+			return yield* Effect.fail(
+				new Error(
+					`DATABRILL_CONFIG references undefined environment variable(s): ${missing.join(", ")}`,
+				),
+			);
+		}
+		return raw.replace(placeholder, (_match, name: string) => values.get(name) ?? "");
 	});
 }
 
@@ -256,51 +273,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function build(parsed: unknown, source: string): Result.Result<Config, Error> {
+function build(parsed: RegistryInput, source: string): Result.Result<Config, Error> {
 	return Result.gen(function* () {
-		if (!isRecord(parsed)) {
-			return yield* invalidConfig(source, "root must be an object");
-		}
-		const rawWorkspaces = parsed["workspaces"];
-		if (!isRecord(rawWorkspaces)) {
-			return yield* invalidConfig(source, 'missing "workspaces" object');
-		}
-
 		const workspaces: Record<string, Workspace> = {};
 		const byCountry = new Map<string, string[]>();
 		const byMerchant = new Map<string, string>();
 
-		for (const [wsid, ws] of Object.entries(rawWorkspaces)) {
-			if (!isRecord(ws)) {
-				return yield* invalidConfig(source, `workspace "${wsid}" must be an object`);
-			}
-
-			const db = isRecord(ws["database"]) ? ws["database"] : undefined;
-			const postgresUrl = db?.["postgresUrl"];
-			if (typeof postgresUrl !== "string" || !postgresUrl) {
-				return yield* invalidConfig(source, `workspace "${wsid}" missing database.postgresUrl`);
-			}
-			const schema = typeof db?.["schema"] === "string" && db["schema"] ? db["schema"] : `w${wsid}`;
-
-			const rawMerchants = ws["merchants"];
-			if (!isRecord(rawMerchants)) {
-				return yield* invalidConfig(source, `workspace "${wsid}" missing "merchants" object`);
-			}
-
+		for (const [wsid, ws] of Object.entries(parsed.workspaces)) {
+			const { postgresUrl } = ws.database;
+			const schema = typeof ws.database.schema === "string" && ws.database.schema
+				? ws.database.schema
+				: `w${wsid}`;
 			const merchants: Record<string, Merchant> = {};
-			for (const [merchantId, m] of Object.entries(rawMerchants)) {
-				if (!isRecord(m)) {
-					return yield* invalidConfig(source, `merchant "${merchantId}" must be an object`);
-				}
-				const countriesRaw = m["countries"];
-				if (!Array.isArray(countriesRaw) || countriesRaw.length === 0) {
-					return yield* invalidConfig(source, `merchant "${merchantId}" needs a non-empty "countries" array`);
-				}
+			for (const [merchantId, m] of Object.entries(ws.merchants)) {
 				const countries: string[] = [];
-				for (const c of countriesRaw) {
-					if (typeof c !== "string") {
-						return yield* invalidConfig(source, `merchant "${merchantId}" has a non-string country`);
-					}
+				for (const c of m.countries) {
 					const canon = canonicalCountryCode(c);
 					if (!(canon in countryCodeToMarketplaceInfo)) {
 						return yield* invalidConfig(source, `merchant "${merchantId}" has unknown country "${c}"`);
@@ -324,22 +311,18 @@ function build(parsed: unknown, source: string): Result.Result<Config, Error> {
 				}
 
 				merchants[merchantId] = {
-					name: typeof m["name"] === "string" ? m["name"] : undefined,
+					name: typeof m.name === "string" ? m.name : undefined,
 					countries,
 				};
 			}
 
 			workspaces[wsid] = {
 				wsid,
-				label: typeof ws["label"] === "string" ? ws["label"] : undefined,
+				label: typeof ws.label === "string" ? ws.label : undefined,
 				database: { postgresUrl, schema },
 				merchants,
-				features: yield* parseFeatures(ws["features"], source),
+				features: ws.features ?? {},
 			};
-		}
-
-		if (Object.keys(workspaces).length === 0) {
-			return yield* invalidConfig(source, '"workspaces" is empty');
 		}
 
 		return { workspaces, byCountry, byMerchant };

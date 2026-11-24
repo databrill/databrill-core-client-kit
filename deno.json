@@ -10,7 +10,7 @@
 	},
 	"imports": {
 		"effect": "npm:effect@4.1.4",
-		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.24",
+		"@databrill/core-pg-kysely": "npm:@jsr/databrill__core-pg-kysely@^0.1.25",
 		"@effect/platform-node": "npm:@effect/platform-node@4.1.4",
 		"@effect/platform-node-shared": "npm:@effect/platform-node-shared@4.1.4"
 	},

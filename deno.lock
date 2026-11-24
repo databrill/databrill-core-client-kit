@@ -3,7 +3,7 @@
   "specifiers": {
     "npm:@effect/platform-node-shared@4.1.4": "4.1.4_effect@4.1.4",
     "npm:@effect/platform-node@4.1.4": "4.1.4_effect@4.1.4_redis@6.3.1",
-    "npm:@jsr/databrill__core-pg-kysely@~0.1.24": "0.1.24",
+    "npm:@jsr/databrill__core-pg-kysely@~0.1.25": "0.1.25",
     "npm:effect@4.1.4": "4.1.4"
   },
   "npm": {
@@ -24,14 +24,14 @@
         "undici"
       ]
     },
-    "@jsr/databrill__core-pg-kysely@0.1.24": {
-      "integrity": "sha512-z3s9/LpxP6dtb8QqDX6N+ciJB3dCtlHtG/BbDvHpTX1Nd6OpR0At0xBefkgZd2R/7kLZnyoNO+owvYQMgO6EJg==",
+    "@jsr/databrill__core-pg-kysely@0.1.25": {
+      "integrity": "sha512-nxM3XhGm0G9Anxz7IrzNZauYumOQIPOb6QchbNhrD+2KqdG2EIniLLLFTc3HQS9TBdtnU5TuZb1q8JZqBcZkCw==",
       "dependencies": [
         "effect",
         "kysely",
         "pg"
       ],
-      "tarball": "https://npm.jsr.io/~/11/@jsr/databrill__core-pg-kysely/0.1.24.tgz"
+      "tarball": "https://npm.jsr.io/~/11/@jsr/databrill__core-pg-kysely/0.1.25.tgz"
     },
     "@redis/bloom@6.3.1_@redis+client@6.3.1": {
       "integrity": "sha512-dpF9j2yJDoPzSCaZn0MSB3xzmnXQVJeTSAWJcQVcgbmluwhpFeemmII0cF1t+WYfoVS+shEFq79+MmUItgzJLg==",
@@ -170,7 +170,7 @@
     "dependencies": [
       "npm:@effect/platform-node-shared@4.1.4",
       "npm:@effect/platform-node@4.1.4",
-      "npm:@jsr/databrill__core-pg-kysely@~0.1.24",
+      "npm:@jsr/databrill__core-pg-kysely@~0.1.25",
       "npm:effect@4.1.4"
     ]
   }

@@ -49,7 +49,7 @@ import { Effect } from "effect";
 import { stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import process from "node:process";
-import { type Config, loadConfig, type Workspace } from "./config.ts";
+import { type Config, loadConfig, type Workspace } from "./workspaceRegistry.ts";
 import { tryOrOperationError, tryPromiseOrOperationError } from "./effects.ts";
 
 export type { Workspace };
